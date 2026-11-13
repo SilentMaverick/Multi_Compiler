@@ -23,6 +23,10 @@ The outline tab lists every class, method and free function in the current file:
 
 ![Outline panel](docs/screenshot-outline.png)
 
+Programs that prompt for input get a real conversation in the Terminal tab:
+
+![Interactive terminal](docs/screenshot-terminal.png)
+
 ---
 
 ## What it does
@@ -33,11 +37,15 @@ The outline tab lists every class, method and free function in the current file:
 | **Auto-detect** | language is inferred from the file extensions; `.cpp .cc .cxx .c++ .c` / `.java` |
 | **Multi-file** | many files per project; Java gets real multi-class compilation |
 | **stdin** | a dedicated input tab, fed to the program |
+| **Terminal** | interactive sessions: the program stays alive, you type and see replies live |
 | **Outline** | live list of classes, methods and free functions — click to jump, filter as you type |
 | **Test cases** | input + expected output, run as a batch with an AC/WA/TLE/MLE/RE verdict per case |
 | **Limits** | wall-clock timeout and memory cap, enforced per run |
 | **Diagnostics** | compiler output parsed into `file:line:col`, severity, source line and caret |
 | **Error navigation** | a failed build opens the offending file, jumps to the exact line and marks it |
+| **Snippets** | save named programs locally, reload them later, survive a browser wipe |
+| **Export** | one-file HTML report with the source and the last run, ready to share or print |
+| **Build cache** | identical sources reuse the previous binary, so re-runs skip compilation |
 | **Isolation** | every run happens in a throwaway directory with a fresh process tree |
 
 Verdicts follow the usual competitive-programming vocabulary:
@@ -85,11 +93,45 @@ src/runner.js          process launch (job object, or spawn fallback)
 src/diagnostics.js     g++/javac output  ->  structured diagnostics
 src/toolchains.js      toolchain discovery + version probing
 src/examples.js        starter programs
+src/sessions.js        interactive sessions (SSE output, POST input)
+src/snippets.js        saved-program library (.data/snippets.json)
+src/export.js          standalone HTML report generator
 native/jobrunner.cs    Windows Job Object launcher (kernel limits)
 public/outline.js      class/function scanner for the Outline panel
 public/                the IDE (index.html, styles.css, app.js)
 tests/                 outline parser tests + end-to-end suite
 ```
+
+### Interactive terminal
+
+A normal run is batch: stdin is written up front and the process is waited on.
+The **Terminal** tab instead starts a session — the program keeps running with
+live pipes, its output streams to the panel, and each line you type is written to
+its stdin immediately. Output travels over Server-Sent Events, input over `POST`,
+so the server stays dependency-free (no WebSocket handshake to hand-roll).
+
+That is what makes prompting programs usable:
+
+```
+Name? › Ada
+Hi Ada
+Count? › 10
+Sum 1..10 = 55
+— session ended (exit 0) —
+```
+
+Sessions are capped at 3 concurrent, expire after 3 minutes, and can be stopped
+from the panel. They run under a plain spawn plus a tree-kill, so they honour the
+time limit but **not** the kernel memory cap the job object provides — use Run for
+resource-limited judging.
+
+### Snippets and export
+
+**Snippets** saves the whole working copy (files, stdin, tests, language, limits)
+under a name, server-side in `.data/snippets.json` — so it survives clearing site
+data and is easy to back up. **Export** renders a single self-contained HTML file
+with the escaped source, the last runtime result and per-test verdicts; it prints
+cleanly to PDF and needs no assets or network.
 
 ### Error navigation
 
@@ -108,6 +150,14 @@ literals, tracks brace depth, then recognises `class`/`struct`/`enum`/`interface
 parameter lists and out-of-class `Foo::bar` definitions). It is language-agnostic
 across C, C++ and Java, runs on every keystroke (debounced), and never throws on
 malformed input. Symbols whose line has a diagnostic are tinted red.
+
+### Compile cache
+
+Every build is keyed by a hash of the sources, the detected language and the
+compiler version. A hit copies the previous artifact into the run directory instead
+of invoking `g++`/`javac`, which turns a repeat run from ~1.7 s into ~0.3 s. Entries
+live in `.cache/builds/`, are pruned to the 80 most recent, and a failed compile is
+never cached. Bump `FLAGS_VERSION` in `src/executor.js` when the compile flags change.
 
 ### Isolation and limits
 
@@ -176,8 +226,30 @@ Response:
 }
 ```
 
-`GET /api/health` — toolchain versions, launcher mode, platform.
+`GET /api/health` — toolchain versions, launcher mode, cache stats, live sessions.
 `GET /api/examples` — the starter programs.
+
+Interactive sessions:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/session/start` | compile and start the program with live pipes; returns a session id |
+| `GET /api/session/:id/stream` | SSE stream of `{t:"o"｜"e",d}` output chunks and a final `{t:"x",code}` |
+| `POST /api/session/:id/input` | `{ "data": "..." }` written straight to the program's stdin |
+| `POST /api/session/:id/stop` | terminate the process tree |
+
+Snippets:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/snippets` | summaries (name, files, lines, timestamps) |
+| `POST /api/snippets` | save `{ name, files, stdin, tests, language, limits }` |
+| `GET /api/snippets/:id` | full snippet, ready to load |
+| `PUT /api/snippets/:id` | rename or overwrite |
+| `DELETE /api/snippets/:id` | remove |
+
+Export: `POST /api/export` with `{ title, language, files, result, notes }` returns a
+complete HTML document (`text/html`).
 
 ---
 

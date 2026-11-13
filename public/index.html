@@ -35,6 +35,8 @@
     <div class="spacer"></div>
 
     <button class="btn ghost" id="btn-examples" title="Load an example">Examples</button>
+    <button class="btn ghost" id="btn-snippets" title="Saved programs">Snippets</button>
+    <button class="btn ghost" id="btn-export" title="Share this program">Export</button>
     <button class="btn ghost" id="btn-limits" title="Time and memory limits">Limits</button>
     <button class="btn primary" id="btn-run" title="Compile and run (Ctrl+Enter)">
       <span class="play">&#9654;</span> Run <kbd>Ctrl</kbd><kbd>&#8629;</kbd>
@@ -81,6 +83,7 @@
           <button class="tab" data-tab="problems">Problems <span class="badge hidden" id="badge-problems">0</span></button>
           <button class="tab" data-tab="tests">Tests <span class="badge hidden" id="badge-tests">0</span></button>
           <button class="tab" data-tab="stdin">Input (stdin)</button>
+          <button class="tab" data-tab="terminal">Terminal</button>
           <div class="spacer"></div>
           <button class="icon-btn" id="btn-clear" title="Clear output">&#10005;</button>
         </div>
@@ -120,6 +123,26 @@
           <div class="pane hidden" data-pane="stdin">
             <textarea id="stdin" class="stdin-box" spellcheck="false" placeholder="Text typed here is fed to the program's standard input."></textarea>
           </div>
+
+          <div class="pane hidden" data-pane="terminal">
+            <div class="term-toolbar">
+              <button class="btn primary sm" id="btn-term-start">&#9654; Start session</button>
+              <button class="btn ghost sm" id="btn-term-stop" disabled>Stop</button>
+              <span class="hint" id="term-status">Not running &mdash; start a session to type into the program.</span>
+              <div class="spacer"></div>
+              <label class="term-echo" title="Show what you type">
+                <input type="checkbox" id="term-echo" checked /> echo
+              </label>
+              <button class="icon-btn" id="btn-term-clear" title="Clear terminal">&#10005;</button>
+            </div>
+            <pre class="term-out" id="term-out"></pre>
+            <form class="term-input" id="term-form">
+              <span class="term-prompt">&rsaquo;</span>
+              <input id="term-line" type="text" autocomplete="off" spellcheck="false"
+                     placeholder="Type a line and press Enter" disabled />
+              <button class="btn ghost sm" type="submit" id="btn-term-send" disabled>Send</button>
+            </form>
+          </div>
         </div>
       </section>
     </section>
@@ -152,6 +175,33 @@
 <div class="popover hidden" id="popover-examples">
   <h3>Examples</h3>
   <div class="example-list" id="example-list"></div>
+</div>
+
+<div class="popover wide hidden" id="popover-snippets">
+  <h3>Saved snippets</h3>
+  <div class="snip-save">
+    <input id="snip-name" class="text-input" placeholder="Name this program" maxlength="80" />
+    <button class="btn primary sm" id="btn-snip-save">Save current</button>
+  </div>
+  <p class="pop-note" id="snip-note">Stored on this machine in <code>.data/snippets.json</code>.</p>
+  <div class="snip-list" id="snip-list"></div>
+</div>
+
+<div class="popover hidden" id="popover-export">
+  <h3>Export</h3>
+  <label class="pop-field">
+    <span>Title</span>
+    <input id="export-title" class="text-input" placeholder="Multi-Coder report" maxlength="200" />
+  </label>
+  <label class="pop-field">
+    <span>Notes (optional)</span>
+    <textarea id="export-notes" class="notes-input" rows="2" placeholder="What this program does…"></textarea>
+  </label>
+  <div class="export-actions">
+    <button class="btn primary sm" id="btn-export-html">Download HTML report</button>
+    <button class="btn ghost sm" id="btn-export-copy">Copy code</button>
+  </div>
+  <p class="pop-note">The report embeds the source and the last run result &mdash; one file, no dependencies.</p>
 </div>
 
 <div class="toast hidden" id="toast"></div>

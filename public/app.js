@@ -50,6 +50,27 @@
     statusLang: $('status-lang'),
     statusLauncher: $('status-launcher'),
     toast: $('toast'),
+    snippetsBtn: $('btn-snippets'),
+    exportBtn: $('btn-export'),
+    popSnippets: $('popover-snippets'),
+    popExport: $('popover-export'),
+    snipName: $('snip-name'),
+    snipList: $('snip-list'),
+    snipSave: $('btn-snip-save'),
+    snipNote: $('snip-note'),
+    exportTitle: $('export-title'),
+    exportNotes: $('export-notes'),
+    exportHtml: $('btn-export-html'),
+    exportCopy: $('btn-export-copy'),
+    termStart: $('btn-term-start'),
+    termStop: $('btn-term-stop'),
+    termStatus: $('term-status'),
+    termOut: $('term-out'),
+    termForm: $('term-form'),
+    termLine: $('term-line'),
+    termSend: $('btn-term-send'),
+    termClear: $('btn-term-clear'),
+    termEcho: $('term-echo'),
   };
 
   const DEFAULT_CPP = `#include <iostream>
@@ -98,6 +119,8 @@ public class Main {
   let testResults = null;
   let problemsCache = [];
   let markHandles = [];
+  let lastResult = null;
+  const session = { id: null, source: null, running: false };
 
   // ------------------------------------------------------------ state
 
@@ -502,17 +525,22 @@ public class Main {
     els.statusLeft.textContent = value ? label || 'Working\u2026' : 'Ready';
   }
 
-  async function run(useTests) {
-    if (busy) return;
+  function buildPayload(extra) {
     syncActive();
-
-    const payload = {
+    return {
       language: state.language,
       files: state.files.map((f) => ({ name: f.name, content: f.content })),
       stdin: state.stdin,
       limits: state.limits,
+      ...(extra || {}),
     };
-    if (useTests) payload.tests = state.tests.map((t) => ({ input: t.input, expected: t.expected }));
+  }
+
+  async function run(useTests) {
+    if (busy) return;
+    syncActive();
+
+    const payload = buildPayload(useTests ? { tests: state.tests.map((t) => ({ input: t.input, expected: t.expected })) } : null);
 
     setBusy(true, useTests ? 'Running tests\u2026' : 'Compiling\u2026');
     showTab('output');
@@ -549,6 +577,7 @@ public class Main {
   }
 
   function renderResult(data, useTests) {
+    lastResult = data;
     problemsCache = data.compile ? data.compile.diagnostics || [] : [];
     state.problemIndex = -1;
     renderProblems(problemsCache);
@@ -1119,12 +1148,28 @@ public class Main {
   }
 
   function applyExample(ex) {
+    applyProgram(
+      {
+        files: ex.files,
+        stdin: ex.stdin,
+        tests: ex.tests,
+        language: 'auto',
+      },
+      `Loaded: ${ex.label}`
+    );
+  }
+
+  /** Replace the whole working copy (used by examples and saved snippets). */
+  function applyProgram(program, message) {
     syncActive();
-    state.files = ex.files.map((f) => ({ name: f.name, content: f.content }));
+    state.files = program.files.map((f) => ({ name: f.name, content: f.content }));
     state.activeFile = 0;
-    state.stdin = ex.stdin || '';
-    state.tests = ex.tests && ex.tests.length ? ex.tests.map((t) => ({ input: t.input, expected: t.expected })) : [{ input: '', expected: '' }];
-    state.language = 'auto';
+    state.stdin = program.stdin || '';
+    state.tests =
+      program.tests && program.tests.length
+        ? program.tests.map((t) => ({ input: t.input || '', expected: t.expected || '' }))
+        : [{ input: '', expected: '' }];
+    state.language = program.language || 'auto';
     testResults = null;
     els.stdin.value = state.stdin;
     els.lang.value = state.language;
@@ -1141,7 +1186,7 @@ public class Main {
     updateLanguageBadge();
     hidePopovers();
     save();
-    toast(`Loaded: ${ex.label}`);
+    if (message) toast(message);
   }
 
   // ------------------------------------------------------------ popovers
@@ -1152,8 +1197,9 @@ public class Main {
   }
 
   function hidePopovers() {
-    els.popLimits.classList.add('hidden');
-    els.popExamples.classList.add('hidden');
+    [els.popLimits, els.popExamples, els.popSnippets, els.popExport].forEach((p) => {
+      if (p) p.classList.add('hidden');
+    });
   }
 
   function initPopovers() {
@@ -1170,7 +1216,20 @@ public class Main {
       showPopover(els.popExamples);
     });
 
-    [els.popLimits, els.popExamples].forEach((p) => p.addEventListener('click', (e) => e.stopPropagation()));
+    [els.popLimits, els.popExamples, els.popSnippets, els.popExport].forEach((p) => {
+      if (p) p.addEventListener('click', (e) => e.stopPropagation());
+    });
+
+    els.snippetsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSnippets();
+    });
+
+    els.exportBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!els.exportTitle.value) els.exportTitle.value = defaultExportTitle();
+      showPopover(els.popExport);
+    });
 
     document.addEventListener('click', hidePopovers);
 
@@ -1183,6 +1242,339 @@ public class Main {
     };
     els.limitTime.addEventListener('change', commit);
     els.limitMem.addEventListener('change', commit);
+  }
+
+  // ------------------------------------------------------------ terminal (interactive run)
+
+  function termClear() {
+    if (els.termOut) els.termOut.textContent = '';
+  }
+
+  function termWrite(text, cls) {
+    if (!text || !els.termOut) return;
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    els.termOut.appendChild(span);
+    els.termOut.scrollTop = els.termOut.scrollHeight;
+  }
+
+  function stripAnsi(text) {
+    return String(text)
+      .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\r(?!\n)/g, '');
+  }
+
+  function setTermControls(running) {
+    if (!els.termStart) return;
+    els.termStart.disabled = running;
+    els.termStop.disabled = !running;
+    els.termLine.disabled = !running;
+    els.termSend.disabled = !running;
+    if (running) els.termLine.focus();
+  }
+
+  async function startSession() {
+    if (session.running) await stopSession(true);
+    termClear();
+    setTermControls(false);
+    els.termStart.disabled = true;
+    els.termStatus.textContent = 'Compiling\u2026';
+    termWrite('[starting]\n', 'term-sys');
+
+    let data;
+    try {
+      const res = await fetch('api/session/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildPayload()),
+      });
+      data = await res.json();
+    } catch (err) {
+      termWrite(`[error] ${err.message}\n`, 'term-err');
+      els.termStatus.textContent = 'Could not reach the server.';
+      els.termStart.disabled = false;
+      return;
+    }
+
+    if (!data.ok) {
+      if (data.compile) {
+        problemsCache = data.compile.diagnostics || [];
+        state.problemIndex = -1;
+        renderProblems(problemsCache);
+        refreshMarkers();
+        const first =
+          problemsCache.find((d) => d.severity === 'error' && d.file && d.line) ||
+          problemsCache.find((d) => d.file && d.line);
+        if (first) jumpToDiagnostic(first);
+        showTab('problems');
+      }
+      termWrite('\nCompilation failed \u2014 see the Problems tab.\n', 'term-err');
+      els.termStatus.textContent = 'Compile failed.';
+      els.termStart.disabled = false;
+      return;
+    }
+
+    session.id = data.sessionId;
+    session.running = true;
+    termClear();
+    termWrite(`session ${data.sessionId} \u00b7 ${data.language}${data.compile.cached ? ' \u00b7 cached build' : ''}\n`, 'term-sys');
+    termWrite('\u2014 program is live; type below and press Enter \u2014\n\n', 'term-sys');
+    connectStream(data.sessionId);
+    setTermControls(true);
+    els.termStatus.textContent = 'Running \u2014 type below and press Enter.';
+  }
+
+  function connectStream(id) {
+    closeStream();
+    if (!window.EventSource) {
+      termWrite('[error] this browser does not support EventSource\n', 'term-err');
+      return;
+    }
+    const es = new EventSource(`api/session/${encodeURIComponent(id)}/stream`);
+    session.source = es;
+    es.onmessage = (ev) => {
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (msg.t === 'o') termWrite(stripAnsi(msg.d));
+      else if (msg.t === 'e') termWrite(stripAnsi(msg.d), 'term-err');
+      else if (msg.t === 'x') endSession(msg.code);
+    };
+    es.onerror = () => {
+      /* the browser retries on its own; a dead session simply 404s and stops */
+    };
+  }
+
+  function closeStream() {
+    if (session.source) {
+      try {
+        session.source.close();
+      } catch {
+        /* ignore */
+      }
+      session.source = null;
+    }
+  }
+
+  function endSession(code) {
+    session.running = false;
+    closeStream();
+    termWrite(`\n\u2014 session ended (exit ${code == null ? '?' : code}) \u2014\n`, 'term-sys');
+    els.termStatus.textContent = `Ended \u2014 exit ${code == null ? '?' : code}.`;
+    setTermControls(false);
+    els.termStart.disabled = false;
+  }
+
+  async function stopSession(silent) {
+    if (!session.id) return;
+    const id = session.id;
+    try {
+      await fetch(`api/session/${encodeURIComponent(id)}/stop`, { method: 'POST' });
+    } catch {
+      /* already gone */
+    }
+    closeStream();
+    session.running = false;
+    session.id = null;
+    setTermControls(false);
+    els.termStart.disabled = false;
+    if (!silent) {
+      termWrite('\n[stopped]\n', 'term-sys');
+      els.termStatus.textContent = 'Stopped.';
+    }
+  }
+
+  async function sendTermLine() {
+    if (!session.running || !session.id) return;
+    const line = els.termLine.value;
+    els.termLine.value = '';
+    if (els.termEcho.checked) termWrite(`\u203a ${line}\n`, 'term-you');
+    try {
+      await fetch(`api/session/${encodeURIComponent(session.id)}/input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: `${line}\n` }),
+      });
+    } catch (err) {
+      termWrite(`[error] ${err.message}\n`, 'term-err');
+    }
+  }
+
+  // ------------------------------------------------------------ snippets
+
+  async function refreshSnippetList() {
+    els.snipList.textContent = '';
+    let data;
+    try {
+      const res = await fetch('api/snippets');
+      data = await res.json();
+    } catch {
+      els.snipList.textContent = 'Could not load saved snippets.';
+      return;
+    }
+    const items = data.snippets || [];
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'Nothing saved yet.';
+      els.snipList.appendChild(empty);
+      return;
+    }
+    items.forEach((s) => els.snipList.appendChild(renderSnippetItem(s)));
+  }
+
+  function renderSnippetItem(s) {
+    const row = document.createElement('div');
+    row.className = 'snip-item';
+
+    const main = document.createElement('div');
+    main.className = 'snip-main';
+    const name = document.createElement('div');
+    name.className = 'snip-name';
+    name.textContent = s.name;
+    name.title = s.name;
+    const meta = document.createElement('div');
+    meta.className = 'snip-meta';
+    const when = new Date(s.updatedAt);
+    meta.textContent = `${s.language} \u00b7 ${s.files.join(', ')} \u00b7 ${s.lines} lines \u00b7 ${when.toLocaleDateString()}`;
+    main.append(name, meta);
+
+    const load = document.createElement('button');
+    load.className = 'icon-btn';
+    load.textContent = '\u2192';
+    load.title = 'Load this snippet';
+    load.addEventListener('click', () => loadSnippet(s.id));
+
+    const del = document.createElement('button');
+    del.className = 'icon-btn';
+    del.textContent = '\u2715';
+    del.title = 'Delete this snippet';
+    del.addEventListener('click', () => deleteSnippet(s));
+
+    row.append(main, load, del);
+    return row;
+  }
+
+  async function openSnippets() {
+    showPopover(els.popSnippets);
+    await refreshSnippetList();
+  }
+
+  async function saveSnippet() {
+    const fallbackName = (currentFile() && currentFile().name) || 'Untitled';
+    const name = els.snipName.value.trim() || fallbackName.replace(/\.[^.]+$/, '');
+    els.snipSave.disabled = true;
+    try {
+      const res = await fetch('api/snippets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, ...buildPayload() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Save failed.');
+      els.snipName.value = '';
+      toast(`Saved "${data.snippet.name}".`);
+      await refreshSnippetList();
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      els.snipSave.disabled = false;
+    }
+  }
+
+  async function loadSnippet(id) {
+    try {
+      const res = await fetch(`api/snippets/${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Not found.');
+      applyProgram(data.snippet, `Loaded "${data.snippet.name}".`);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  async function deleteSnippet(s) {
+    if (!window.confirm(`Delete "${s.name}"?`)) return;
+    try {
+      const res = await fetch(`api/snippets/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Delete failed.');
+      }
+      await refreshSnippetList();
+      toast('Deleted.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  // ------------------------------------------------------------ export
+
+  function defaultExportTitle() {
+    const file = currentFile();
+    return file ? `${file.name} \u2014 Multi-Coder` : 'Multi-Coder report';
+  }
+
+  function slugify(text) {
+    return (
+      String(text)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60) || 'report'
+    );
+  }
+
+  function downloadBlob(text, filename, type) {
+    const blob = new Blob([text], { type: `${type};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function exportHtmlReport() {
+    const title = els.exportTitle.value.trim() || defaultExportTitle();
+    els.exportHtml.disabled = true;
+    try {
+      const res = await fetch('api/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          language: state.language,
+          files: state.files.map((f) => ({ name: f.name, content: f.content })),
+          result: lastResult,
+          notes: els.exportNotes.value.trim(),
+        }),
+      });
+      if (!res.ok) throw new Error(`Export failed (${res.status}).`);
+      const html = await res.text();
+      downloadBlob(html, `${slugify(title)}.html`, 'text/html');
+      toast('Report downloaded.');
+      hidePopovers();
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      els.exportHtml.disabled = false;
+    }
+  }
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(editor.getValue());
+      toast('Code copied to clipboard.');
+    } catch {
+      toast('The browser blocked clipboard access.', true);
+    }
   }
 
   // ------------------------------------------------------------ toast
@@ -1258,6 +1650,19 @@ public class Main {
 
     if (els.btnPrevProblem) els.btnPrevProblem.addEventListener('click', () => gotoProblem(-1));
     if (els.btnNextProblem) els.btnNextProblem.addEventListener('click', () => gotoProblem(1));
+
+    if (els.termStart) {
+      els.termStart.addEventListener('click', startSession);
+      els.termStop.addEventListener('click', () => stopSession(false));
+      els.termClear.addEventListener('click', termClear);
+      els.termForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        sendTermLine();
+      });
+    }
+    if (els.snipSave) els.snipSave.addEventListener('click', saveSnippet);
+    if (els.exportHtml) els.exportHtml.addEventListener('click', exportHtmlReport);
+    if (els.exportCopy) els.exportCopy.addEventListener('click', copyCode);
 
     document.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;

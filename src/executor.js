@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { run, withPath } = require('./runner');
 const diagnostics = require('./diagnostics');
 const toolchains = require('./toolchains');
@@ -242,6 +243,126 @@ function verdictOf(result, expected, hasExpected) {
   return normalizeOutput(result.stdout) === normalizeOutput(expected) ? 'AC' : 'WA';
 }
 
+// ---------------------------------------------------------------- compile cache
+
+const CACHE_DIR = path.join(ROOT, '.cache', 'builds');
+const CACHE_MAX_ENTRIES = 80;
+// Bump when the compile flags change so stale artifacts are not reused.
+const FLAGS_VERSION = 'v1';
+
+/** Hash of everything that can change the produced binary. */
+function cacheKeyFor({ language, files, tc }) {
+  const h = crypto.createHash('sha256');
+  h.update(FLAGS_VERSION);
+  h.update('\0');
+  h.update(language);
+  h.update('\0');
+  h.update(language === 'java' ? tc.java.version || '' : tc.cpp.version || '');
+  const sorted = [...files].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const f of sorted) {
+    h.update('\0');
+    h.update(f.name);
+    h.update('\0');
+    h.update(f.content);
+  }
+  return h.digest('hex').slice(0, 32);
+}
+
+function copyTree(from, to) {
+  fs.mkdirSync(to, { recursive: true });
+  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+    const src = path.join(from, entry.name);
+    const dest = path.join(to, entry.name);
+    if (entry.isDirectory()) copyTree(src, dest);
+    else fs.copyFileSync(src, dest);
+  }
+}
+
+/** Materialise a cached build into this run's directory. */
+function cacheRestore(key, plan, language) {
+  const src = path.join(CACHE_DIR, key);
+  if (!fs.existsSync(src)) return false;
+  try {
+    if (language === 'java') {
+      const classesSrc = path.join(src, 'classes');
+      if (!fs.existsSync(classesSrc)) return false;
+      copyTree(classesSrc, plan.classesDir);
+    } else {
+      const exe = path.join(src, 'artifact');
+      if (!fs.existsSync(exe)) return false;
+      fs.copyFileSync(exe, plan.artifact);
+    }
+    const now = new Date();
+    fs.utimesSync(src, now, now); // keep LRU ordering fresh
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cacheStore(key, plan, language) {
+  const dest = path.join(CACHE_DIR, key);
+  const tmp = `${dest}.tmp`;
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.mkdirSync(tmp, { recursive: true });
+    if (language === 'java') copyTree(plan.classesDir, path.join(tmp, 'classes'));
+    else fs.copyFileSync(plan.artifact, path.join(tmp, 'artifact'));
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.renameSync(tmp, dest);
+    pruneCache();
+  } catch {
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  }
+}
+
+function pruneCache() {
+  try {
+    const entries = fs
+      .readdirSync(CACHE_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.endsWith('.tmp'))
+      .map((e) => ({ name: e.name, mtime: fs.statSync(path.join(CACHE_DIR, e.name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const old of entries.slice(CACHE_MAX_ENTRIES)) {
+      fs.rmSync(path.join(CACHE_DIR, old.name), { recursive: true, force: true });
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function cacheStats() {
+  try {
+    const entries = fs.readdirSync(CACHE_DIR, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.endsWith('.tmp'));
+    let bytes = 0;
+    for (const e of entries) {
+      const stack = [path.join(CACHE_DIR, e.name)];
+      while (stack.length) {
+        const dir = stack.pop();
+        for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, f.name);
+          if (f.isDirectory()) stack.push(p);
+          else {
+            try {
+              bytes += fs.statSync(p).size;
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+    }
+    return { entries: entries.length, bytes, maxEntries: CACHE_MAX_ENTRIES };
+  } catch {
+    return { entries: 0, bytes: 0, maxEntries: CACHE_MAX_ENTRIES };
+  }
+}
+
 // ---------------------------------------------------------------- execute
 
 async function execute(body, ctx = {}) {
@@ -282,23 +403,39 @@ async function execute(body, ctx = {}) {
   try {
     const plan = language === 'java' ? javaPlan({ files, dir, tc }) : cppPlan({ language, files, dir, tc });
 
-    const compileResult = await run({
-      command: plan.command,
-      args: plan.args,
-      cwd: dir,
-      stdin: '',
-      timeoutMs: limits.compileTimeMs,
-      memoryBytes: 0,
-      env: runtimeEnv,
-      scratch,
-    });
+    const cacheKey = ctx.useCache === false ? null : cacheKeyFor({ language, files, tc });
+    let compileResult = null;
+    let cached = false;
+
+    if (cacheKey && cacheRestore(cacheKey, plan, language)) {
+      cached = true;
+      compileResult = {
+        stdout: '', stderr: '', exitCode: 0, wallMs: 0, timedOut: false,
+        peakMemoryBytes: null, stdoutTruncated: false, stderrTruncated: false,
+        error: null, launcher: 'cache',
+      };
+    } else {
+      compileResult = await run({
+        command: plan.command,
+        args: plan.args,
+        cwd: dir,
+        stdin: '',
+        timeoutMs: limits.compileTimeMs,
+        memoryBytes: 0,
+        env: runtimeEnv,
+        scratch,
+      });
+    }
 
     const raw = `${compileResult.stdout}${compileResult.stderr}`;
     const parsed = diagnostics.parse(raw, { workDir: dir, sources, language });
     const compileOk = compileResult.exitCode === 0 && !compileResult.timedOut;
 
+    if (compileOk && !cached && cacheKey) cacheStore(cacheKey, plan, language);
+
     response.compile = {
       ok: compileOk,
+      cached,
       ms: compileResult.wallMs,
       command: [plan.command, ...plan.args].join(' '),
       raw,
@@ -375,6 +512,13 @@ async function execute(body, ctx = {}) {
       hardMemory = true;
       command = plan.artifact;
       args = [];
+    }
+
+    // Sessions (interactive runs) only need the compiled artifact and how to start it.
+    if (ctx.compileOnly) {
+      response.meta.launch = { dir, command, args, memoryBytes, hardMemory, language, scratch };
+      response.meta.artifact = language === 'java' ? plan.classesDir : plan.artifact;
+      return response;
     }
 
     const execOne = async (input) => {
@@ -456,4 +600,6 @@ module.exports = {
   normalizeOutput,
   detectLanguage,
   javaMainClass,
+  cacheStats,
+  cacheKeyFor,
 };

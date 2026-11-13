@@ -15,6 +15,9 @@ const executor = require('./src/executor');
 const toolchains = require('./src/toolchains');
 const runner = require('./src/runner');
 const examples = require('./src/examples');
+const sessions = require('./src/sessions');
+const snippets = require('./src/snippets');
+const exportReport = require('./src/export');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
@@ -153,6 +156,48 @@ async function serveStatic(req, res, pathname) {
   fs.createReadStream(resolved).pipe(res);
 }
 
+/** Server-Sent Events: replays what the program already printed, then streams. */
+function streamSession(req, res, session) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  const send = (ev) => {
+    try {
+      res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    } catch {
+      /* client went away */
+    }
+  };
+
+  res.write(': connected\n\n');
+  for (const ev of session.buffer) send(ev);
+
+  if (session.closed) {
+    send({ t: 'x', code: session.exitCode, signal: session.signal });
+    return res.end();
+  }
+
+  const unsubscribe = session.subscribe(send);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      /* ignore */
+    }
+  }, 15000);
+
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  };
+  req.on('close', cleanup);
+  res.on('close', cleanup);
+}
+
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
@@ -168,6 +213,9 @@ async function handle(req, res) {
       },
       launcher: process.platform === 'win32' && runner.helperAvailable() ? 'jobobject' : 'fallback',
       helperBuilt: runner.helperAvailable(),
+      cache: executor.cacheStats(),
+      sessions: sessions.list().length,
+      sessionLimit: sessions.MAX_SESSIONS,
       platform: `${process.platform}-${process.arch}`,
       node: process.version,
       cpus: os.cpus().length,
@@ -178,6 +226,82 @@ async function handle(req, res) {
 
   if (pathname === '/api/examples') {
     return sendJson(res, 200, { examples: examples.list() });
+  }
+
+  // ------------------------------------------------------------ snippets (#6)
+  if (pathname === '/api/snippets') {
+    if (req.method === 'GET') return sendJson(res, 200, { snippets: snippets.list() });
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      return sendJson(res, 201, { snippet: snippets.create(body) });
+    }
+  }
+
+  if (pathname.startsWith('/api/snippets/')) {
+    const id = decodeURIComponent(pathname.slice('/api/snippets/'.length));
+    if (!id || id.includes('/')) return sendJson(res, 404, { ok: false, error: 'Unknown snippet.' });
+    if (req.method === 'GET') return sendJson(res, 200, { snippet: snippets.get(id) });
+    if (req.method === 'PUT' || req.method === 'PATCH') {
+      const body = await readBody(req);
+      return sendJson(res, 200, { snippet: snippets.update(id, body) });
+    }
+    if (req.method === 'DELETE') {
+      snippets.remove(id);
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  // ------------------------------------------------------------ export (#8)
+  if (pathname === '/api/export' && req.method === 'POST') {
+    const body = await readBody(req);
+    const html = exportReport.renderReport({
+      title: body.title || 'Multi-Coder report',
+      language: body.language,
+      files: body.files,
+      result: body.result || null,
+      notes: body.notes,
+    });
+    const buf = Buffer.from(html, 'utf8');
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Length': buf.length,
+      'Cache-Control': 'no-store',
+    });
+    return res.end(buf);
+  }
+
+  // ------------------------------------------------------------ sessions (#7)
+  if (pathname === '/api/session/start' && req.method === 'POST') {
+    const body = await readBody(req);
+    const result = await withSlot(() => sessions.start(body));
+    return sendJson(res, result.ok ? 201 : 200, result);
+  }
+
+  const sessionMatch = /^\/api\/session\/([^/]+)\/(stream|input|stop|state)$/.exec(pathname);
+  if (sessionMatch) {
+    const id = decodeURIComponent(sessionMatch[1]);
+    const action = sessionMatch[2];
+    const session = sessions.get(id);
+    if (!session) return sendJson(res, 404, { ok: false, error: 'That session has ended or expired.' });
+
+    if (action === 'stream' && req.method === 'GET') return streamSession(req, res, session);
+    if (action === 'input' && req.method === 'POST') {
+      const body = await readBody(req);
+      const ok = sessions.input(id, typeof body.data === 'string' ? body.data : '');
+      return sendJson(res, 200, { ok });
+    }
+    if (action === 'stop' && req.method === 'POST') {
+      sessions.stop(id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (action === 'state') {
+      return sendJson(res, 200, {
+        ok: true,
+        closed: session.closed,
+        exitCode: session.exitCode,
+        startedAt: session.startedAt,
+      });
+    }
   }
 
   if (pathname === '/api/run' && req.method === 'POST') {
@@ -216,7 +340,7 @@ function main() {
 
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
-      const status = err instanceof executor.HttpError ? err.status : 500;
+      const status = Number.isInteger(err.status) ? err.status : 500;
       if (!res.headersSent) sendJson(res, status, { ok: false, error: err.message });
       else res.end();
       if (status >= 500) console.error('[error]', err);
@@ -261,6 +385,11 @@ function main() {
 
   const shutdown = () => {
     console.log('\n  shutting down...');
+    try {
+      sessions.shutdown();
+    } catch {
+      /* ignore */
+    }
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };
