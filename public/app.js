@@ -20,6 +20,14 @@
     resizer: $('resizer'),
     panelTabs: $('panel-tabs'),
     problems: $('problems'),
+    problemsSummary: $('problems-summary'),
+    problemsToolbar: $('problems-toolbar'),
+    btnPrevProblem: $('btn-prev-problem'),
+    btnNextProblem: $('btn-next-problem'),
+    railTabs: $('rail-tabs'),
+    outlineList: $('outline-list'),
+    outlineSummary: $('outline-summary'),
+    outlineFilter: $('outline-filter'),
     badgeProblems: $('badge-problems'),
     badgeTests: $('badge-tests'),
     streams: $('streams'),
@@ -171,7 +179,7 @@ public class Main {
       const cm = window.CodeMirror(host, {
         value: currentFile() ? currentFile().content : '',
         mode: MODE[fileLanguage(currentFile()) || 'cpp'],
-        lineNumbers: true,
+        gutters: ['mc-gutter', 'CodeMirror-linenumbers'],
         indentUnit: 4,
         tabSize: 4,
         indentWithTabs: false,
@@ -190,6 +198,7 @@ public class Main {
       cm.on('change', () => {
         syncActive();
         save();
+        scheduleOutline();
       });
       cm.on('cursorActivity', () => {
         const pos = cm.getCursor();
@@ -197,14 +206,16 @@ public class Main {
       });
       editor = {
         kind: 'cm',
+        cm,
         getValue: () => cm.getValue(),
         setValue: (v) => cm.setValue(v || ''),
         setMode: (m) => cm.setOption('mode', m),
         focus: () => cm.focus(),
         refresh: () => cm.refresh(),
-        setCursor: (line) => {
-          cm.setCursor({ line: Math.max(0, line - 1), ch: 0 });
-          cm.scrollIntoView({ line: Math.max(0, line - 1), ch: 0 }, 120);
+        setCursor: (line, col) => {
+          const target = { line: Math.max(0, line - 1), ch: Math.max(0, (col || 1) - 1) };
+          cm.setCursor(target);
+          cm.scrollIntoView(target, 120);
           cm.focus();
         },
         clearMarks: () => {
@@ -221,6 +232,38 @@ public class Main {
           const handle = cm.addLineClass(line - 1, 'background', cls);
           markHandles.push({ line: line - 1, cls });
           return handle;
+        },
+        clearGutter: () => {
+          try {
+            cm.clearGutter('mc-gutter');
+          } catch {
+            /* ignore */
+          }
+        },
+        setGutter: (line, severity) => {
+          const dot = document.createElement('div');
+          dot.className = `mc-gutter-dot ${severity === 'warning' ? 'warn' : severity === 'info' ? 'info' : 'err'}`;
+          dot.title = severity;
+          try {
+            cm.setGutterMarker(line - 1, 'mc-gutter', dot);
+          } catch {
+            /* ignore */
+          }
+        },
+        flashLine: (line) => {
+          const idx = Math.max(0, line - 1);
+          try {
+            cm.addLineClass(idx, 'background', 'cm-line-flash');
+            setTimeout(() => {
+              try {
+                cm.removeLineClass(idx, 'background', 'cm-line-flash');
+              } catch {
+                /* ignore */
+              }
+            }, 1400);
+          } catch {
+            /* ignore */
+          }
         },
       };
     } else {
@@ -243,6 +286,7 @@ public class Main {
       host.appendChild(ta);
       editor = {
         kind: 'textarea',
+        cm: null,
         getValue: () => ta.value,
         setValue: (v) => {
           ta.value = v || '';
@@ -253,6 +297,9 @@ public class Main {
         setCursor: () => {},
         clearMarks: () => {},
         markLine: () => {},
+        clearGutter: () => {},
+        setGutter: () => {},
+        flashLine: () => {},
       };
     }
 
@@ -311,8 +358,9 @@ public class Main {
     const f = currentFile();
     editor.setValue(f ? f.content : '');
     editor.setMode(MODE[fileLanguage(f) || 'cpp']);
-    editor.clearMarks();
     renderFiles();
+    refreshMarkers();
+    renderOutline();
     updateLanguageBadge();
     save();
   }
@@ -502,8 +550,9 @@ public class Main {
 
   function renderResult(data, useTests) {
     problemsCache = data.compile ? data.compile.diagnostics || [] : [];
+    state.problemIndex = -1;
     renderProblems(problemsCache);
-    markDiagnostics(problemsCache);
+    refreshMarkers();
 
     if (!data.compile) {
       els.streams.textContent = '';
@@ -521,6 +570,19 @@ public class Main {
       if (data.compile.raw.trim()) renderStream('Compiler output', data.compile.raw, 'stderr');
       else renderStream('Compiler output', '(no output)', 'empty');
       showTab('problems');
+
+      // Take the user straight to the first thing that actually broke, even if
+      // it lives in a different file than the one they were editing.
+      const first = problemsCache.find((d) => d.severity === 'error' && d.file && d.line) ||
+        problemsCache.find((d) => d.file && d.line);
+      if (first) {
+        jumpToDiagnostic(first);
+        const where = `${first.file}:${first.line}${first.col ? ':' + first.col : ''}`;
+        els.statusLeft.textContent = `Compile failed \u2014 ${where}`;
+        toast(`Compile failed \u2014 jumped to ${where}`);
+      } else {
+        els.statusLeft.textContent = 'Compile failed';
+      }
     } else if (useTests) {
       testResults = data.tests || [];
       renderTests();
@@ -633,6 +695,20 @@ public class Main {
 
   function renderProblems(list) {
     els.problems.textContent = '';
+
+    const errors = list.filter((d) => d.severity === 'error').length;
+    const warnings = list.filter((d) => d.severity === 'warning').length;
+    if (els.problemsSummary) {
+      if (!list.length) els.problemsSummary.textContent = 'Clean compile \u2014 no diagnostics.';
+      else {
+        const bits = [];
+        if (errors) bits.push(`${errors} error${errors === 1 ? '' : 's'}`);
+        if (warnings) bits.push(`${warnings} warning${warnings === 1 ? '' : 's'}`);
+        if (!bits.length) bits.push(`${list.length} note${list.length === 1 ? '' : 's'}`);
+        els.problemsSummary.textContent = `${bits.join(' \u00b7 ')} \u2014 click one to jump`;
+      }
+    }
+
     if (!list.length) {
       const d = document.createElement('div');
       d.className = 'empty';
@@ -645,9 +721,13 @@ public class Main {
       const btn = document.createElement('button');
       btn.className = `diag ${diag.severity || 'error'}`;
       btn.type = 'button';
+      btn.dataset.index = String(i);
 
       const head = document.createElement('div');
       head.className = 'diag-head';
+
+      const dot = document.createElement('span');
+      dot.className = 'diag-sev-dot';
 
       const sev = document.createElement('span');
       sev.className = 'diag-sev';
@@ -661,7 +741,7 @@ public class Main {
       msg.className = 'diag-msg';
       msg.textContent = diag.message;
 
-      head.append(sev, loc, msg);
+      head.append(dot, sev, loc, msg);
       btn.appendChild(head);
 
       if (diag.source !== null && diag.source !== undefined && diag.line) {
@@ -691,21 +771,56 @@ public class Main {
   }
 
   function jumpToDiagnostic(diag) {
-    if (!diag.file) return;
+    if (!diag) return;
+    if (!diag.file) {
+      if (diag.message) toast(diag.message, true);
+      return;
+    }
     const idx = state.files.findIndex((f) => f.name.toLowerCase() === diag.file.toLowerCase());
     if (idx < 0) return toast(`Open ${diag.file} to see this line.`, true);
-    switchFile(idx);
-    if (diag.line) editor.setCursor(diag.line);
+    if (idx !== state.activeFile) switchFile(idx);
+    if (diag.line) {
+      editor.setCursor(diag.line, diag.col || 1);
+      editor.flashLine(diag.line);
+    }
+    highlightProblemCard(diag);
   }
 
-  function markDiagnostics(list) {
+  function highlightProblemCard(diag) {
+    const idx = problemsCache.indexOf(diag);
+    els.problems.querySelectorAll('.diag').forEach((el, i) => {
+      el.classList.toggle('current', i === idx);
+    });
+    const current = els.problems.querySelector('.diag.current');
+    if (current && current.scrollIntoView) current.scrollIntoView({ block: 'nearest' });
+  }
+
+  /** Step through every diagnostic that has a location (F8 / Shift+F8). */
+  function gotoProblem(delta) {
+    const list = problemsCache.filter((d) => d.file && d.line);
+    if (!list.length) return toast('No problems to navigate.');
+    let i = typeof state.problemIndex === 'number' ? state.problemIndex : -1;
+    i = ((i + delta) % list.length + list.length) % list.length;
+    state.problemIndex = i;
+    const diag = list[i];
+    jumpToDiagnostic(diag);
+    els.statusLeft.textContent = `Problem ${i + 1}/${list.length} \u2014 ${diag.file}:${diag.line}`;
+  }
+
+  /** Re-apply line highlights and gutter dots for the file now in the editor. */
+  function refreshMarkers() {
     if (!editor || editor.kind !== 'cm') return;
     syncActive();
     editor.clearMarks();
-    list.forEach((d) => {
+    editor.clearGutter();
+    const file = currentFile();
+    if (!file) return;
+    const target = file.name.toLowerCase();
+    problemsCache.forEach((d) => {
       if (!d.line || !d.file) return;
-      if (d.file.toLowerCase() !== (currentFile() || {}).name?.toLowerCase()) return;
+      if (d.file.toLowerCase() !== target) return;
       editor.markLine(d.line, d.severity === 'warning' ? 'cm-diagnostic-line-warn' : 'cm-diagnostic-line');
+      editor.setGutter(d.line, d.severity);
     });
   }
 
@@ -723,6 +838,84 @@ public class Main {
     } else {
       els.badgeTests.className = 'badge hidden';
     }
+  }
+
+  // ------------------------------------------------------------ outline
+
+  let outlineTimer = null;
+
+  function outlineVisible() {
+    const pane = document.querySelector('[data-rail-pane="outline"]');
+    return pane && !pane.classList.contains('hidden');
+  }
+
+  function scheduleOutline() {
+    if (!outlineVisible()) return;
+    clearTimeout(outlineTimer);
+    outlineTimer = setTimeout(renderOutline, 250);
+  }
+
+  function renderOutline() {
+    const list = els.outlineList;
+    if (!list) return;
+
+    const file = currentFile();
+    list.textContent = '';
+
+    if (!file || !window.MCOutline) {
+      if (els.outlineSummary) els.outlineSummary.textContent = 'outline unavailable';
+      return;
+    }
+
+    const result = window.MCOutline.parse(file.content);
+    const flat = window.MCOutline.flatten(result);
+    const filter = (els.outlineFilter.value || '').trim().toLowerCase();
+    const shown = filter ? flat.filter((s) => s.name.toLowerCase().includes(filter)) : flat;
+
+    if (els.outlineSummary) {
+      const fns = result.stats.functions;
+      const cls = result.stats.classes;
+      const count = filter ? `${shown.length}/${flat.length} shown` : `${fns} fn \u00b7 ${cls} type${cls === 1 ? '' : 's'}`;
+      els.outlineSummary.textContent = `${count} \u00b7 ${result.stats.lines} lines`;
+    }
+
+    if (!shown.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = filter ? 'No symbols match the filter.' : 'No functions or classes found.';
+      list.appendChild(empty);
+      return;
+    }
+
+    shown.forEach((sym) => {
+      const li = document.createElement('li');
+      li.className = `outline-item ${sym.kind}`;
+      li.style.paddingLeft = `${8 + sym.level * 13}px`;
+      li.title = sym.signature || sym.name;
+      if (file && problemsCache.some((d) => d.file === file.name && d.line === sym.line)) li.classList.add('has-issue');
+
+      const icon = document.createElement('span');
+      icon.className = 'o-icon';
+      icon.textContent = sym.kind === 'class' ? 'C' : sym.kind === 'constructor' ? 'N' : '\u0192';
+
+      const name = document.createElement('span');
+      name.className = 'o-name';
+      name.textContent = sym.name;
+
+      const line = document.createElement('span');
+      line.className = 'o-line';
+      line.textContent = String(sym.line);
+
+      li.append(icon, name, line);
+      li.addEventListener('click', () => {
+        list.querySelectorAll('.outline-item').forEach((el) => el.classList.remove('active'));
+        li.classList.add('active');
+        editor.setCursor(sym.line, 1);
+        editor.flashLine(sym.line);
+        els.statusLeft.textContent = `${sym.name} \u2014 line ${sym.line}`;
+      });
+      list.appendChild(li);
+    });
   }
 
   // ------------------------------------------------------------ tests
@@ -938,9 +1131,12 @@ public class Main {
     editor.setValue(state.files[0].content);
     editor.setMode(MODE[fileLanguage(state.files[0]) || 'cpp']);
     editor.clearMarks();
+    editor.clearGutter();
     problemsCache = [];
+    state.problemIndex = -1;
     renderFiles();
     renderProblems([]);
+    renderOutline();
     renderTests();
     updateLanguageBadge();
     hidePopovers();
@@ -1010,6 +1206,7 @@ public class Main {
     buildEditor();
     renderFiles();
     renderTests();
+    renderOutline();
     updateLanguageBadge();
     setPanelHeight(state.panelHeight, false);
     initResizer();
@@ -1046,6 +1243,22 @@ public class Main {
       if (tab) showTab(tab.dataset.tab);
     });
 
+    els.railTabs.addEventListener('click', (e) => {
+      const btn = e.target.closest('.rail-tab');
+      if (!btn) return;
+      const name = btn.dataset.rail;
+      els.railTabs.querySelectorAll('.rail-tab').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.rail-pane').forEach((p) => {
+        p.classList.toggle('hidden', p.dataset.railPane !== name);
+      });
+      if (name === 'outline') renderOutline();
+    });
+
+    els.outlineFilter.addEventListener('input', renderOutline);
+
+    if (els.btnPrevProblem) els.btnPrevProblem.addEventListener('click', () => gotoProblem(-1));
+    if (els.btnNextProblem) els.btnNextProblem.addEventListener('click', () => gotoProblem(1));
+
     document.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === 'Enter') {
@@ -1056,6 +1269,9 @@ public class Main {
         syncActive();
         save();
         toast('Saved locally.');
+      } else if (e.key === 'F8') {
+        e.preventDefault();
+        gotoProblem(e.shiftKey ? -1 : 1);
       } else if (e.key === 'Escape') {
         hidePopovers();
       }

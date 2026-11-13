@@ -573,3 +573,138 @@ pre.out.empty-out { color: var(--fg-muted); font-style: italic; }
   .file-item { font-size: 11px; }
   .topbar { gap: 8px; }
 }
+
+/* ---------------------------------------------------------------- rail tabs */
+.rail-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+.rail-tab {
+  flex: 1 1 auto;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 6px 4px 7px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+}
+.rail-tab:hover { color: var(--fg); background: var(--bg-3); }
+.rail-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+
+.rail-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+
+/* ---------------------------------------------------------------- outline */
+.outline-head { padding: 8px 8px 4px; flex: 0 0 auto; }
+.outline-filter {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 7px;
+  font-size: 11.5px;
+  outline: none;
+}
+.outline-filter:focus { border-color: var(--accent); }
+.outline-summary {
+  padding: 2px 12px 6px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  flex: 0 0 auto;
+}
+.outline-list {
+  list-style: none;
+  margin: 0;
+  padding: 2px 6px 8px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.outline-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--fg-dim);
+  min-width: 0;
+}
+.outline-item:hover { background: var(--bg-3); color: var(--fg); }
+.outline-item.active { background: rgba(79, 140, 255, 0.13); color: #cfe0ff; }
+.outline-item.has-issue .o-name { color: #ffb3ba; }
+.outline-item.has-issue .o-line { color: #ff9aa4; }
+.o-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: var(--bg-4);
+  color: var(--fg-muted);
+}
+.outline-item.class .o-icon { background: rgba(79, 140, 255, 0.18); color: #9dc0ff; }
+.outline-item.constructor .o-icon { background: rgba(123, 92, 255, 0.18); color: #c3b4ff; }
+.outline-item.function .o-icon { background: rgba(46, 204, 143, 0.14); color: #8fe8c0; }
+.o-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.outline-item.class .o-name { font-weight: 600; }
+.o-line { color: var(--fg-muted); font-size: 10px; font-family: var(--mono); flex: 0 0 auto; }
+
+/* ---------------------------------------------------------------- error markers */
+.CodeMirror-gutter.mc-gutter { width: 14px; }
+.CodeMirror-gutter.mc-gutter .CodeMirror-gutter-elt { left: 0; width: 14px; }
+.mc-gutter-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin: 4px auto 0;
+}
+.mc-gutter-dot.err { background: var(--err); }
+.mc-gutter-dot.warn { background: var(--warn); }
+.mc-gutter-dot.info { background: var(--info); }
+
+@keyframes mcFlash {
+  0%, 100% { background: rgba(255, 92, 108, 0); }
+  12%, 55% { background: rgba(255, 92, 108, 0.30); }
+}
+.cm-line-flash { animation: mcFlash 1.3s ease-out; }
+
+/* ---------------------------------------------------------------- problems */
+.pane[data-pane="problems"] { display: flex; flex-direction: column; overflow: hidden; }
+.problems-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  flex: 0 0 auto;
+}
+.problems { flex: 1 1 auto; overflow: auto; padding: 8px 10px; }
+.diag.current { border-color: rgba(79, 140, 255, 0.55); background: var(--bg-4); }
+.diag-sev-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--err);
+}
+.diag.warning .diag-sev-dot { background: var(--warn); }
+.diag.info .diag-sev-dot { background: var(--info); }

@@ -14,9 +14,14 @@ single-page front-end. Nothing is sent to a third party and nothing needs admin 
 
 ![Multi-Coder running a C++ program](docs/screenshot.png)
 
-Compile errors become clickable, caret-annotated diagnostics:
+Compile errors become clickable, caret-annotated diagnostics — and a failed build
+takes you straight to the offending line:
 
-![Problems panel](docs/screenshot-problems.png)
+![Problems panel](docs/screenshot-errors.png)
+
+The outline tab lists every class, method and free function in the current file:
+
+![Outline panel](docs/screenshot-outline.png)
 
 ---
 
@@ -28,9 +33,11 @@ Compile errors become clickable, caret-annotated diagnostics:
 | **Auto-detect** | language is inferred from the file extensions; `.cpp .cc .cxx .c++ .c` / `.java` |
 | **Multi-file** | many files per project; Java gets real multi-class compilation |
 | **stdin** | a dedicated input tab, fed to the program |
+| **Outline** | live list of classes, methods and free functions — click to jump, filter as you type |
 | **Test cases** | input + expected output, run as a batch with an AC/WA/TLE/MLE/RE verdict per case |
 | **Limits** | wall-clock timeout and memory cap, enforced per run |
 | **Diagnostics** | compiler output parsed into `file:line:col`, severity, source line and caret |
+| **Error navigation** | a failed build opens the offending file, jumps to the exact line and marks it |
 | **Isolation** | every run happens in a throwaway directory with a fresh process tree |
 
 Verdicts follow the usual competitive-programming vocabulary:
@@ -79,8 +86,28 @@ src/diagnostics.js     g++/javac output  ->  structured diagnostics
 src/toolchains.js      toolchain discovery + version probing
 src/examples.js        starter programs
 native/jobrunner.cs    Windows Job Object launcher (kernel limits)
+public/outline.js      class/function scanner for the Outline panel
 public/                the IDE (index.html, styles.css, app.js)
+tests/                 outline parser tests + end-to-end suite
 ```
+
+### Error navigation
+
+When a compile fails the IDE picks the first diagnostic that has a location, opens
+that file even if it is not the one being edited, places the cursor on the exact
+line and column, flashes it, and drops a red dot in the gutter. Every diagnostic
+gets a gutter marker and a line tint, so the whole failing region is visible at a
+glance. <kbd>F8</kbd> and <kbd>Shift</kbd>+<kbd>F8</kbd> walk the list; the
+Problems toolbar shows the current position.
+
+### Outline
+
+`public/outline.js` is a small heuristic scanner: it blanks out comments and string
+literals, tracks brace depth, then recognises `class`/`struct`/`enum`/`interface`/
+`record` declarations and function definitions (including constructors, multi-line
+parameter lists and out-of-class `Foo::bar` definitions). It is language-agnostic
+across C, C++ and Java, runs on every keystroke (debounced), and never throws on
+malformed input. Symbols whose line has a diagnostic are tinted red.
 
 ### Isolation and limits
 
@@ -160,12 +187,24 @@ Response:
 |---|---|
 | <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | compile & run |
 | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> | run the test cases |
+| <kbd>F8</kbd> / <kbd>Shift</kbd>+<kbd>F8</kbd> | next / previous problem |
 | <kbd>Ctrl</kbd>+<kbd>S</kbd> | persist to localStorage (also automatic) |
 | <kbd>Esc</kbd> | close popovers |
 
 Your files, limits, tests and stdin are kept in `localStorage`, so a refresh does not lose work.
 
 ---
+
+## Tests
+
+```bash
+npm test
+```
+
+* `tests/outline.js` — parser unit tests across C, C++ and Java (nesting, comments,
+  multi-line signatures, lambdas, malformed input).
+* `tests/smoke.js` — end-to-end against the real compilers: run, AC/WA/CE, TLE, MLE,
+  Java multi-class and `OutOfMemoryError`, path-traversal rejection.
 
 ## Notes and limits of the design
 

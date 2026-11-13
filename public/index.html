@@ -44,12 +44,28 @@
   <main class="workspace">
 
     <aside class="files">
-      <div class="files-head">
-        <span>Files</span>
-        <button class="icon-btn" id="btn-add-file" title="Add file">+</button>
+      <div class="rail-tabs" id="rail-tabs">
+        <button class="rail-tab active" data-rail="files">Files</button>
+        <button class="rail-tab" data-rail="outline">Outline</button>
       </div>
-      <ul class="file-list" id="file-list"></ul>
-      <div class="files-foot">.cpp .cc .cxx .c .java</div>
+
+      <div class="rail-pane" data-rail-pane="files">
+        <div class="files-head">
+          <span>Files</span>
+          <button class="icon-btn" id="btn-add-file" title="Add file">+</button>
+        </div>
+        <ul class="file-list" id="file-list"></ul>
+        <div class="files-foot">.cpp .cc .cxx .c .java</div>
+      </div>
+
+      <div class="rail-pane hidden" data-rail-pane="outline">
+        <div class="outline-head">
+          <input id="outline-filter" class="outline-filter" placeholder="Filter symbols" spellcheck="false" />
+        </div>
+        <div class="outline-summary" id="outline-summary">&mdash;</div>
+        <ul class="outline-list" id="outline-list"></ul>
+        <div class="files-foot">click to jump</div>
+      </div>
     </aside>
 
     <section class="editor-col">
@@ -78,6 +94,12 @@
           </div>
 
           <div class="pane hidden" data-pane="problems">
+            <div class="problems-toolbar" id="problems-toolbar">
+              <span id="problems-summary" class="hint">No diagnostics yet.</span>
+              <div class="spacer"></div>
+              <button class="btn ghost sm" id="btn-prev-problem" title="Previous problem (Shift+F8)">&uarr; Prev</button>
+              <button class="btn ghost sm" id="btn-next-problem" title="Next problem (F8)">Next &darr;</button>
+            </div>
             <div class="problems" id="problems">
               <div class="empty">No diagnostics yet.</div>
             </div>
@@ -140,6 +162,7 @@
 <script src="vendor/matchbrackets.min.js"></script>
 <script src="vendor/active-line.min.js"></script>
 <script src="vendor/clike.min.js"></script>
+<script src="outline.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

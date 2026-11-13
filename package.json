@@ -1,6 +1,6 @@
 {
   "name": "multi-coder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Multi-language compile & run IDE for C++ and Java in the browser",
   "type": "commonjs",
@@ -12,6 +12,7 @@
     "start": "node server.js",
     "dev": "node server.js --open",
     "setup": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-toolchains.ps1",
-    "build:native": "powershell -ExecutionPolicy Bypass -File scripts/build-jobrunner.ps1"
+    "build:native": "powershell -ExecutionPolicy Bypass -File scripts/build-jobrunner.ps1",
+    "test": "node tests/outline.js && node tests/smoke.js"
   }
 }
