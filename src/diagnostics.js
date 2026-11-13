@@ -92,6 +92,11 @@ function parse(raw, opts = {}) {
   const workDir = opts.workDir || process.cwd();
   const sources = opts.sources || new Map();
   const known = new Set(sources.keys());
+
+  // Python and Node emit tracebacks rather than gcc-style one-liners.
+  if (opts.language === 'python') return parsePython(raw, workDir, known);
+  if (opts.language === 'javascript') return parseJavascript(raw, workDir, known);
+
   const lines = explodeLines(raw);
 
   const diagnostics = [];
@@ -234,4 +239,82 @@ function parse(raw, opts = {}) {
   };
 }
 
-module.exports = { parse, normalizeName, MAX_DIAGNOSTICS };
+// ---------------------------------------------------------------- python / node
+
+const PY_LOC = /^\s*File "(?<file>[^"]+)", line (?<line>\d+)/;
+// SyntaxError: invalid syntax / ZeroDivisionError: division by zero / IndentationError: expected a block
+const PY_ERR = /^(?<kind>[A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit))\s*:?\s*(?<msg>.*)$/;
+// C:\path\main.js:12
+const JS_LOC = /^(?<file>(?:[A-Za-z]:)?[\\/][^:]+?|\S[^:]*?):(?<line>\d+)$/;
+const JS_ERR = /^(?<kind>[A-Za-z_][\w]*Error)\s*:\s*(?<msg>.*)$/;
+
+/**
+ * Shared scanner for traceback-shaped output: a location line, an echoed source
+ * line, a caret ruler, then the error line.
+ */
+function scanTraceback(raw, workDir, known, locRe, errRe) {
+  const lines = explodeLines(raw);
+  const out = [];
+  let loc = null;
+  let source = null;
+  let caretCol = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    const locMatch = locRe.exec(line);
+    if (locMatch) {
+      loc = { file: locMatch.groups.file, line: Number(locMatch.groups.line) };
+      source = null;
+      caretCol = 0;
+
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      if (j < lines.length && !errRe.test(lines[j].trim()) && !locRe.test(lines[j])) {
+        source = lines[j].replace(/\t/g, '    ').replace(/\s+$/, '');
+        if (j + 1 < lines.length && /^\s*\^/.test(lines[j + 1])) {
+          caretCol = lines[j + 1].indexOf('^') + 1;
+        }
+        i = j + 1;
+      }
+      continue;
+    }
+
+    const errMatch = errRe.exec(line.trim());
+    if (errMatch) {
+      const kind = errMatch.groups.kind;
+      const msg = (errMatch.groups.msg || '').trim();
+      out.push({
+        file: normalizeName(loc ? loc.file : '', workDir, known),
+        line: loc ? loc.line : 0,
+        col: caretCol,
+        severity: 'error',
+        message: msg ? `${kind}: ${msg}` : kind,
+        source: source,
+        details: [],
+      });
+      loc = null;
+      source = null;
+      caretCol = 0;
+      continue;
+    }
+  }
+
+  const trimmed = out.slice(0, MAX_DIAGNOSTICS);
+  return {
+    diagnostics: trimmed,
+    truncated: out.length > trimmed.length,
+    errors: out.filter((d) => d.severity === 'error').length,
+    warnings: 0,
+  };
+}
+
+function parsePython(raw, workDir, known) {
+  return scanTraceback(raw, workDir, known, PY_LOC, PY_ERR);
+}
+
+function parseJavascript(raw, workDir, known) {
+  return scanTraceback(raw, workDir, known, JS_LOC, JS_ERR);
+}
+
+module.exports = { parse, normalizeName, MAX_DIAGNOSTICS, parsePython, parseJavascript };

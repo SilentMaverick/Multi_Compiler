@@ -76,7 +76,7 @@ function sanitizePayload(payload) {
     files: cleanFiles,
     stdin: typeof payload.stdin === 'string' ? payload.stdin.slice(0, 256 * 1024) : '',
     tests,
-    language: ['auto', 'cpp', 'c', 'java'].includes(payload.language) ? payload.language : 'auto',
+    language: ['auto', 'cpp', 'c', 'java', 'python', 'javascript'].includes(payload.language) ? payload.language : 'auto',
     limits: {
       timeMs: clamp(payload.limits && payload.limits.timeMs, 100, 30000, 5000),
       memoryMB: clamp(payload.limits && payload.limits.memoryMB, 16, 4096, 256),

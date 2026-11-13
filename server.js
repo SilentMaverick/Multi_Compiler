@@ -18,6 +18,10 @@ const examples = require('./src/examples');
 const sessions = require('./src/sessions');
 const snippets = require('./src/snippets');
 const exportReport = require('./src/export');
+const debuggerApi = require('./src/debugger');
+const stress = require('./src/stress');
+const problems = require('./src/problems');
+const collab = require('./src/collab');
 
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
@@ -156,6 +160,56 @@ async function serveStatic(req, res, pathname) {
   fs.createReadStream(resolved).pipe(res);
 }
 
+/** Server-Sent Events for a shared editing room. */
+function streamCollab(req, res, roomId, url) {
+  const clientId = url.searchParams.get('clientId') || '';
+  const name = url.searchParams.get('name') || 'guest';
+
+  let room;
+  try {
+    room = collab.join(roomId, clientId, name);
+  } catch (err) {
+    res.writeHead(Number.isInteger(err.status) ? err.status : 500, { 'Content-Type': 'text/plain' });
+    return res.end(err.message);
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  const send = (event) => {
+    try {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    } catch {
+      /* client gone */
+    }
+  };
+
+  res.write(': connected\n\n');
+  send({ t: 'snapshot', doc: room.doc, rev: room.rev, fileName: room.fileName, language: room.language });
+  send({ t: 'presence', clients: room.presence() });
+
+  room.subscribers.add(send);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      /* ignore */
+    }
+  }, 15000);
+
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    room.subscribers.delete(send);
+    collab.leave(roomId, clientId);
+  };
+  req.on('close', cleanup);
+  res.on('close', cleanup);
+}
+
 /** Server-Sent Events: replays what the program already printed, then streams. */
 function streamSession(req, res, session) {
   res.writeHead(200, {
@@ -210,12 +264,16 @@ async function handle(req, res) {
         cpp: { ok: tc.cpp.ok, version: tc.cpp.version, compiler: tc.cpp.compiler },
         c: { ok: tc.c.ok, version: tc.c.version, compiler: tc.c.compiler },
         java: { ok: tc.java.ok, version: tc.java.version, javac: tc.java.javac, java: tc.java.java },
+        python: { ok: tc.python.ok, version: tc.python.version, bin: tc.python.bin },
+        javascript: { ok: tc.js.ok, version: tc.js.version, bin: tc.js.bin },
       },
       launcher: process.platform === 'win32' && runner.helperAvailable() ? 'jobobject' : 'fallback',
       helperBuilt: runner.helperAvailable(),
       cache: executor.cacheStats(),
       sessions: sessions.list().length,
       sessionLimit: sessions.MAX_SESSIONS,
+      debugSessions: debuggerApi.list().length,
+      collabRooms: collab.list(),
       platform: `${process.platform}-${process.arch}`,
       node: process.version,
       cpus: os.cpus().length,
@@ -226,6 +284,37 @@ async function handle(req, res) {
 
   if (pathname === '/api/examples') {
     return sendJson(res, 200, { examples: examples.list() });
+  }
+
+  // ------------------------------------------------------------ live sharing
+  if (pathname === '/api/collab/rooms' && req.method === 'POST') {
+    const body = await readBody(req);
+    return sendJson(res, 201, { room: collab.createRoom(body) });
+  }
+
+  if (pathname === '/api/collab') {
+    return sendJson(res, 200, { rooms: collab.list() });
+  }
+
+  const collabMatch = /^\/api\/collab\/([^/]+)\/(stream|ops|leave|snapshot)$/.exec(pathname);
+  if (collabMatch) {
+    const roomId = decodeURIComponent(collabMatch[1]);
+    const action = collabMatch[2];
+    try {
+      if (action === 'stream' && req.method === 'GET') return streamCollab(req, res, roomId, url);
+      if (action === 'ops' && req.method === 'POST') {
+        const body = await readBody(req);
+        return sendJson(res, 200, collab.submit(roomId, body));
+      }
+      if (action === 'leave' && req.method === 'POST') {
+        const body = await readBody(req);
+        collab.leave(roomId, body.clientId);
+        return sendJson(res, 200, { ok: true });
+      }
+      if (action === 'snapshot') return sendJson(res, 200, collab.snapshot(roomId));
+    } catch (err) {
+      return sendJson(res, Number.isInteger(err.status) ? err.status : 500, { ok: false, error: err.message });
+    }
   }
 
   // ------------------------------------------------------------ snippets (#6)
@@ -302,6 +391,50 @@ async function handle(req, res) {
         startedAt: session.startedAt,
       });
     }
+  }
+
+  // ------------------------------------------------------------ debugger (#2)
+  if (pathname === '/api/debug/start' && req.method === 'POST') {
+    const body = await readBody(req);
+    const result = await withSlot(() => debuggerApi.start(body));
+    return sendJson(res, result.ok ? 201 : 200, result);
+  }
+
+  const debugMatch = /^\/api\/debug\/([^/]+)\/(cmd|stop|state)$/.exec(pathname);
+  if (debugMatch) {
+    const id = decodeURIComponent(debugMatch[1]);
+    const action = debugMatch[2];
+    if (action === 'stop' && req.method === 'POST') {
+      debuggerApi.stop(id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (action === 'cmd' && req.method === 'POST') {
+      const body = await readBody(req);
+      const state = await debuggerApi.command(id, body.action, body);
+      return sendJson(res, 200, { ok: true, state });
+    }
+    if (action === 'state') {
+      const state = await debuggerApi.command(id, 'state');
+      return sendJson(res, 200, { ok: true, state });
+    }
+  }
+
+  // ------------------------------------------------------------ practice (#1)
+  if (pathname === '/api/problems') {
+    return sendJson(res, 200, { problems: problems.list() });
+  }
+  if (pathname.startsWith('/api/problems/')) {
+    const id = decodeURIComponent(pathname.slice('/api/problems/'.length));
+    const problem = problems.get(id);
+    if (!problem) return sendJson(res, 404, { ok: false, error: 'No such problem.' });
+    return sendJson(res, 200, { problem });
+  }
+
+  // ------------------------------------------------------------ stress (#3)
+  if (pathname === '/api/stress' && req.method === 'POST') {
+    const body = await readBody(req);
+    const result = await withSlot(() => stress.stress(body));
+    return sendJson(res, 200, result);
   }
 
   if (pathname === '/api/run' && req.method === 'POST') {
@@ -387,6 +520,7 @@ function main() {
     console.log('\n  shutting down...');
     try {
       sessions.shutdown();
+      debuggerApi.shutdown();
     } catch {
       /* ignore */
     }

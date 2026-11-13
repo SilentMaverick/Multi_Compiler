@@ -24,18 +24,25 @@
         <option value="cpp">C++</option>
         <option value="c">C</option>
         <option value="java">Java</option>
+        <option value="python">Python</option>
+        <option value="javascript">JavaScript</option>
       </select>
     </label>
 
     <div class="toolchain" id="toolchain" title="Toolchain status">
       <span class="chip chip-muted" id="chip-cpp">g++ &middot; checking</span>
       <span class="chip chip-muted" id="chip-java">javac &middot; checking</span>
+      <span class="chip chip-muted" id="chip-python">python &middot; checking</span>
+      <span class="chip chip-muted" id="chip-js">node &middot; checking</span>
     </div>
 
     <div class="spacer"></div>
 
+    <button class="icon-btn theme-toggle" id="btn-theme" title="Toggle light / dark">&#9789;</button>
     <button class="btn ghost" id="btn-examples" title="Load an example">Examples</button>
+    <button class="btn ghost" id="btn-practice" title="Practice problems">Practice</button>
     <button class="btn ghost" id="btn-snippets" title="Saved programs">Snippets</button>
+    <button class="btn ghost" id="btn-share" title="Share a live session">Share</button>
     <button class="btn ghost" id="btn-export" title="Share this program">Export</button>
     <button class="btn ghost" id="btn-limits" title="Time and memory limits">Limits</button>
     <button class="btn primary" id="btn-run" title="Compile and run (Ctrl+Enter)">
@@ -72,6 +79,13 @@
 
     <section class="editor-col">
       <div class="editor-wrap" id="editor-wrap">
+        <div class="collab-bar hidden" id="collab-bar">
+          <span class="collab-dot"></span>
+          <span id="collab-text">Live session</span>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="btn-collab-copy">Copy link</button>
+          <button class="btn ghost sm" id="btn-collab-leave">Leave</button>
+        </div>
         <div class="editor-host" id="editor"></div>
       </div>
 
@@ -84,6 +98,9 @@
           <button class="tab" data-tab="tests">Tests <span class="badge hidden" id="badge-tests">0</span></button>
           <button class="tab" data-tab="stdin">Input (stdin)</button>
           <button class="tab" data-tab="terminal">Terminal</button>
+          <button class="tab" data-tab="debug">Debug</button>
+          <button class="tab" data-tab="stress">Stress</button>
+          <button class="tab" data-tab="problem">Problem</button>
           <div class="spacer"></div>
           <button class="icon-btn" id="btn-clear" title="Clear output">&#10005;</button>
         </div>
@@ -122,6 +139,71 @@
 
           <div class="pane hidden" data-pane="stdin">
             <textarea id="stdin" class="stdin-box" spellcheck="false" placeholder="Text typed here is fed to the program's standard input."></textarea>
+          </div>
+
+          <div class="pane hidden" data-pane="problem">
+            <div class="problem-wrap">
+              <div class="problem-head">
+                <span class="problem-title" id="problem-title">No problem loaded</span>
+                <span class="badge" id="problem-diff"></span>
+                <div class="spacer"></div>
+                <button class="btn ghost sm" id="btn-problem-reset">Reset code</button>
+                <button class="btn primary sm" id="btn-problem-submit">Submit</button>
+              </div>
+              <pre class="problem-statement" id="problem-statement">Pick a problem from the Practice menu.</pre>
+              <div class="problem-result" id="problem-result"></div>
+            </div>
+          </div>
+
+          <div class="pane hidden" data-pane="stress">
+            <div class="stress">
+              <div class="stress-head">
+                <label class="stress-iters">Iterations
+                  <input id="stress-iters" type="number" min="1" max="200" value="25" />
+                </label>
+                <button class="btn primary sm" id="btn-stress-run">Run stress test</button>
+                <span class="hint" id="stress-status">Compares your program against a reference on random inputs.</span>
+              </div>
+              <div class="stress-grid">
+                <div class="test-field">
+                  <label>Generator &mdash; reads a seed, prints one test case</label>
+                  <textarea id="stress-gen" spellcheck="false"></textarea>
+                </div>
+                <div class="test-field">
+                  <label>Reference &mdash; reads a test case, prints the answer</label>
+                  <textarea id="stress-ref" spellcheck="false"></textarea>
+                </div>
+              </div>
+              <div class="stress-result" id="stress-result"></div>
+            </div>
+          </div>
+
+          <div class="pane hidden" data-pane="debug">
+            <div class="dbg-toolbar">
+              <button class="btn primary sm" id="btn-dbg-start">&#9654; Debug</button>
+              <button class="btn ghost sm" id="btn-dbg-next" disabled title="Step over (F10)">Step over</button>
+              <button class="btn ghost sm" id="btn-dbg-step" disabled title="Step into (F11)">Step in</button>
+              <button class="btn ghost sm" id="btn-dbg-cont" disabled title="Continue (F5)">Continue</button>
+              <button class="btn ghost sm" id="btn-dbg-out" disabled title="Step out">Step out</button>
+              <button class="btn ghost sm" id="btn-dbg-stop" disabled>Stop</button>
+              <span class="hint" id="dbg-status">Not debugging &mdash; click a gutter dot to set a breakpoint, then Debug.</span>
+            </div>
+            <div class="dbg-body">
+              <div class="dbg-side">
+                <div class="dbg-title">Variables</div>
+                <div class="dbg-vars" id="dbg-vars"><div class="empty">Not running.</div></div>
+                <div class="dbg-title">Call stack</div>
+                <div class="dbg-frames" id="dbg-frames"></div>
+              </div>
+              <div class="dbg-main">
+                <div class="dbg-title">Program output</div>
+                <pre class="dbg-out" id="dbg-out"></pre>
+                <form class="dbg-eval" id="dbg-eval-form">
+                  <span class="term-prompt">&rsaquo;</span>
+                  <input id="dbg-expr" placeholder="Evaluate an expression (e.g. n * 2)" autocomplete="off" />
+                </form>
+              </div>
+            </div>
           </div>
 
           <div class="pane hidden" data-pane="terminal">
@@ -177,6 +259,12 @@
   <div class="example-list" id="example-list"></div>
 </div>
 
+<div class="popover wide hidden" id="popover-practice">
+  <h3>Practice problems</h3>
+  <p class="pop-note">Each problem loads starter code plus its sample and hidden tests.</p>
+  <div class="snip-list" id="practice-list"></div>
+</div>
+
 <div class="popover wide hidden" id="popover-snippets">
   <h3>Saved snippets</h3>
   <div class="snip-save">
@@ -195,7 +283,7 @@
   </label>
   <label class="pop-field">
     <span>Notes (optional)</span>
-    <textarea id="export-notes" class="notes-input" rows="2" placeholder="What this program does…"></textarea>
+    <textarea id="export-notes" class="notes-input" rows="2" placeholder="What this program doesâ€¦"></textarea>
   </label>
   <div class="export-actions">
     <button class="btn primary sm" id="btn-export-html">Download HTML report</button>
@@ -212,6 +300,8 @@
 <script src="vendor/matchbrackets.min.js"></script>
 <script src="vendor/active-line.min.js"></script>
 <script src="vendor/clike.min.js"></script>
+<script src="vendor/python.min.js"></script>
+<script src="vendor/javascript.min.js"></script>
 <script src="outline.js"></script>
 <script src="app.js"></script>
 </body>

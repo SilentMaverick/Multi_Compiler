@@ -80,6 +80,13 @@ const JAVA_HOME_CANDIDATES = [
   process.env.JAVA_HOME,
 ];
 
+const PYTHON_CANDIDATES = [
+  process.env.MULTICODER_PYTHON,
+  fromPath('python'),
+  fromPath('python3'),
+  fromPath('py'),
+];
+
 function javaBin(tool) {
   for (const home of JAVA_HOME_CANDIDATES) {
     if (!home) continue;
@@ -105,12 +112,14 @@ async function detect(force = false) {
     const cc = firstExisting(CC_CANDIDATES) || cxx;
     const javac = javaBin('javac');
     const java = javaBin('java');
+    const python = firstExisting(PYTHON_CANDIDATES);
 
-    const [cxxVersion, ccVersion, javacVersion, javaVersion] = await Promise.all([
+    const [cxxVersion, ccVersion, javacVersion, javaVersion, pythonVersion] = await Promise.all([
       probe(cxx, ['--version']),
       probe(cc, ['--version']),
       probe(javac, ['-version']),
       probe(java, ['-version']),
+      probe(python, ['--version']),
     ]);
 
     // A MinGW installation needs its own bin dir on PATH at run time so the
@@ -143,6 +152,21 @@ async function detect(force = false) {
         javaVersion,
         ok: Boolean(javac && java && javacVersion),
         label: javacVersion ? `javac ${javacVersion.replace(/^javac\s*/, '')}` : 'not found',
+      },
+      python: {
+        id: 'python',
+        bin: python,
+        version: pythonVersion,
+        ok: Boolean(python && pythonVersion),
+        label: pythonVersion || 'not found',
+      },
+      // The server itself runs on Node, so this is always available.
+      js: {
+        id: 'javascript',
+        bin: process.execPath,
+        version: process.version,
+        ok: true,
+        label: `node ${process.version}`,
       },
       runtimePathDirs,
       detectedAt: Date.now(),

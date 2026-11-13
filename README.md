@@ -33,8 +33,8 @@ Programs that prompt for input get a real conversation in the Terminal tab:
 
 | | |
 |---|---|
-| **Languages** | C++17 (`g++`), C17 (`gcc`), Java 21 (`javac` + JVM) |
-| **Auto-detect** | language is inferred from the file extensions; `.cpp .cc .cxx .c++ .c` / `.java` |
+| **Languages** | C++17 (`g++`), C17 (`gcc`), Java 21 (`javac` + JVM), Python 3 (`python`), JavaScript (`node`) |
+| **Auto-detect** | language is inferred from the file extensions; `.cpp .cc .cxx .c++ .c .java .py .js .mjs` |
 | **Multi-file** | many files per project; Java gets real multi-class compilation |
 | **stdin** | a dedicated input tab, fed to the program |
 | **Terminal** | interactive sessions: the program stays alive, you type and see replies live |
@@ -45,6 +45,11 @@ Programs that prompt for input get a real conversation in the Terminal tab:
 | **Error navigation** | a failed build opens the offending file, jumps to the exact line and marks it |
 | **Snippets** | save named programs locally, reload them later, survive a browser wipe |
 | **Export** | one-file HTML report with the source and the last run, ready to share or print |
+| **Practice** | bundled problems with statements, starter code, samples and hidden tests |
+| **Stress testing** | generate random cases, compare against a reference, get the counterexample |
+| **Debugger** | breakpoints, stepping, call stack, locals and expression evaluation (C/C++) |
+| **Live sharing** | share a link and edit the same file with other people in real time |
+| **Themes** | dark and light, switchable from the header |
 | **Build cache** | identical sources reuse the previous binary, so re-runs skip compilation |
 | **Isolation** | every run happens in a throwaway directory with a fresh process tree |
 
@@ -158,6 +163,36 @@ compiler version. A hit copies the previous artifact into the run directory inst
 of invoking `g++`/`javac`, which turns a repeat run from ~1.7 s into ~0.3 s. Entries
 live in `.cache/builds/`, are pruned to the 80 most recent, and a failed compile is
 never cached. Bump `FLAGS_VERSION` in `src/executor.js` when the compile flags change.
+
+### Live sharing
+
+Press **Share** and a link like `http://127.0.0.1:7788/#room=AbC123` is copied.
+Opening it in another browser joins the room: both editors hold the same file and
+edits appear on both sides as you type. The bar above the editor lists who is
+connected.
+
+Synchronisation is **operational transformation** for single-splice edits:
+
+1. a local edit becomes `{ pos, del, ins }`,
+2. it is sent with the revision it was based on,
+3. the server transforms it against everything applied since, applies the result,
+   and broadcasts the transformed op over SSE,
+4. clients apply remote ops immediately, and ask for a fresh snapshot if they fall
+   behind.
+
+Each client applies its own keystroke locally first, so typing never waits on the
+network. When a client cannot be transformed cleanly - a stale revision, or remote
+edits arriving while its own are still queued - it resyncs from the server's
+canonical document instead of guessing. That trades a rare visual jump for
+guaranteed convergence in a 2-5 person room.
+
+Rooms live in memory and expire after an hour of inactivity.
+
+### Themes
+
+The header's sun/moon button switches between the dark palette and a light one;
+colours come from CSS variables so every panel, the terminal, the debugger and the
+editor's syntax highlighting follow along.
 
 ### Isolation and limits
 

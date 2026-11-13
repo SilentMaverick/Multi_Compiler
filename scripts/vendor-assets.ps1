@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   vendor-assets.ps1
   Fetches the editor assets (CodeMirror 5) into public\vendor so the IDE works
@@ -21,6 +21,8 @@ $assets = @(
   @{ url = "$base/codemirror.min.js";                                        out = 'codemirror.min.js'; min = 150000 },
   @{ url = "$base/codemirror.min.css";                                       out = 'codemirror.min.css'; min = 5000 },
   @{ url = "$base/mode/clike/clike.min.js";                                  out = 'clike.min.js'; min = 8000 },
+  @{ url = "$base/mode/python/python.min.js";                                out = 'python.min.js'; min = 5000 },
+  @{ url = "$base/mode/javascript/javascript.min.js";                        out = 'javascript.min.js'; min = 5000 },
   @{ url = "$base/addon/edit/matchbrackets.min.js";                          out = 'matchbrackets.min.js'; min = 1000 },
   @{ url = "$base/addon/selection/active-line.min.js";                       out = 'active-line.min.js'; min = 1000 }
 )

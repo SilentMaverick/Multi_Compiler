@@ -82,6 +82,23 @@ const JAVA_MULTI_CALC = `public class Calculator {
 }
 `;
 
+const PYTHON_HELLO = `import sys
+
+name = sys.stdin.readline().strip() or "world"
+squares = [i * i for i in range(1, 6)]
+
+print(f"Hello, {name}!")
+print("Squares:", *squares)
+`;
+
+const JS_HELLO = `const data = require('fs').readFileSync(0, 'utf8').trim();
+const name = data.split(/\\s+/)[0] || 'world';
+
+const squares = [1, 2, 3, 4, 5].map((i) => i * i);
+console.log(\`Hello, \${name}!\`);
+console.log('Squares:', ...squares);
+`;
+
 const examples = [
   {
     id: 'cpp-hello',
@@ -119,6 +136,20 @@ const examples = [
       { name: 'Calculator.java', content: JAVA_MULTI_CALC },
     ],
     stdin: '',
+  },
+  {
+    id: 'python-hello',
+    label: 'Python  hello + stdin',
+    language: 'python',
+    files: [{ name: 'main.py', content: PYTHON_HELLO }],
+    stdin: 'coder\n',
+  },
+  {
+    id: 'js-hello',
+    label: 'JavaScript  hello + stdin',
+    language: 'javascript',
+    files: [{ name: 'main.js', content: JS_HELLO }],
+    stdin: 'coder\n',
   },
 ];
 

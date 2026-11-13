@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /**
  * Compile + run orchestration for the supported languages.
@@ -36,6 +36,9 @@ const EXT = {
   '.c++': 'cpp',
   '.c': 'c',
   '.java': 'java',
+  '.py': 'python',
+  '.js': 'javascript',
+  '.mjs': 'javascript',
 };
 const HEADERS = new Set(['.h', '.hpp', '.hh', '.hxx']);
 
@@ -112,7 +115,9 @@ class HttpError extends Error {
 
 function detectLanguage(files, requested) {
   if (requested && requested !== 'auto') {
-    if (!['cpp', 'c', 'java'].includes(requested)) throw new HttpError(400, `Unknown language "${requested}".`);
+    if (!['cpp', 'c', 'java', 'python', 'javascript'].includes(requested)) {
+      throw new HttpError(400, `Unknown language "${requested}".`);
+    }
     return requested;
   }
   const kinds = new Set();
@@ -150,7 +155,7 @@ function escapeRe(s) {
 
 // ---------------------------------------------------------------- compile
 
-function cppPlan({ language, files, dir, tc }) {
+function cppPlan({ language, files, dir, tc, debug }) {
   const sources = files
     .map((f) => f.name)
     .filter((n) => {
@@ -173,7 +178,8 @@ function cppPlan({ language, files, dir, tc }) {
   const args = [
     isC ? '-std=c17' : '-std=c++17',
     ...(needsXc ? ['-x', 'c'] : []),
-    '-O2',
+    debug ? '-O0' : '-O2',
+    ...(debug ? ['-g', '-fno-omit-frame-pointer'] : []),
     '-pipe',
     '-Wall',
     '-Wextra',
@@ -207,6 +213,42 @@ function javaPlan({ files, dir, tc }) {
   return { command: tc.java.javac, args, classesDir, mainClass, sourceNames: sources };
 }
 
+function pythonPlan({ files, dir, tc }) {
+  if (!tc.python.ok) throw new HttpError(503, 'python not found. Install Python 3 or set MULTICODER_PYTHON.');
+  const sources = files.map((f) => f.name).filter((n) => path.extname(n).toLowerCase() === '.py');
+  if (!sources.length) throw new HttpError(400, 'No .py source files to run.');
+  const entry = sources.find((n) => /^main\.py$/i.test(n)) || sources[0];
+  return {
+    kind: 'python',
+    command: tc.python.bin,
+    // py_compile is a real syntax check: it reports file/line/caret like an interpreter
+    args: ['-m', 'py_compile', entry],
+    entry,
+    sourceNames: sources,
+  };
+}
+
+function jsPlan({ files, dir, tc }) {
+  const sources = files.map((f) => f.name).filter((n) => ['.js', '.mjs'].includes(path.extname(n).toLowerCase()));
+  if (!sources.length) throw new HttpError(400, 'No .js source files to run.');
+  const entry = sources.find((n) => /^main\.m?js$/i.test(n)) || sources[0];
+  return {
+    kind: 'javascript',
+    command: tc.js.bin,
+    args: ['--check', entry],
+    entry,
+    sourceNames: sources,
+  };
+}
+
+/** Pick the compile plan for a detected language. */
+function planFor({ language, files, dir, tc, debug }) {
+  if (language === 'java') return javaPlan({ files, dir, tc });
+  if (language === 'python') return pythonPlan({ files, dir, tc });
+  if (language === 'javascript') return jsPlan({ files, dir, tc });
+  return cppPlan({ language, files, dir, tc, debug });
+}
+
 // ---------------------------------------------------------------- compare
 
 function normalizeOutput(s) {
@@ -233,7 +275,9 @@ function firstDiff(expected, actual) {
 
 function verdictOf(result, expected, hasExpected) {
   const stderr = String(result.stderr || '');
-  const oom = /OutOfMemoryError|std::bad_alloc|bad allocation|Cannot allocate memory/i.test(stderr);
+  const oom = /OutOfMemoryError|std::bad_alloc|bad allocation|Cannot allocate memory|MemoryError|heap out of memory|Array buffer allocation failed/i.test(
+    stderr
+  );
   if (result.timedOut) return 'TLE';
   if (result.memoryExceeded) return 'MLE';
   if (oom && result.exitCode !== 0) return 'MLE';
@@ -248,7 +292,7 @@ function verdictOf(result, expected, hasExpected) {
 const CACHE_DIR = path.join(ROOT, '.cache', 'builds');
 const CACHE_MAX_ENTRIES = 80;
 // Bump when the compile flags change so stale artifacts are not reused.
-const FLAGS_VERSION = 'v1';
+const FLAGS_VERSION = 'v2';
 
 /** Hash of everything that can change the produced binary. */
 function cacheKeyFor({ language, files, tc }) {
@@ -278,29 +322,37 @@ function copyTree(from, to) {
   }
 }
 
-/** Materialise a cached build into this run's directory. */
+/** Materialise a cached build into this run's directory, with its diagnostics. */
 function cacheRestore(key, plan, language) {
   const src = path.join(CACHE_DIR, key);
-  if (!fs.existsSync(src)) return false;
+  if (!fs.existsSync(src)) return null;
   try {
     if (language === 'java') {
       const classesSrc = path.join(src, 'classes');
-      if (!fs.existsSync(classesSrc)) return false;
+      if (!fs.existsSync(classesSrc)) return null;
       copyTree(classesSrc, plan.classesDir);
     } else {
       const exe = path.join(src, 'artifact');
-      if (!fs.existsSync(exe)) return false;
+      if (!fs.existsSync(exe)) return null;
       fs.copyFileSync(exe, plan.artifact);
     }
     const now = new Date();
     fs.utimesSync(src, now, now); // keep LRU ordering fresh
-    return true;
+
+    // Warnings belong to the build, so they are cached with it.
+    let meta = { raw: '', errors: 0, warnings: 0, diagnostics: [], truncated: false };
+    try {
+      meta = JSON.parse(fs.readFileSync(path.join(src, 'meta.json'), 'utf8'));
+    } catch {
+      /* older entry without metadata */
+    }
+    return meta;
   } catch {
-    return false;
+    return null;
   }
 }
 
-function cacheStore(key, plan, language) {
+function cacheStore(key, plan, language, meta) {
   const dest = path.join(CACHE_DIR, key);
   const tmp = `${dest}.tmp`;
   try {
@@ -309,6 +361,7 @@ function cacheStore(key, plan, language) {
     fs.mkdirSync(tmp, { recursive: true });
     if (language === 'java') copyTree(plan.classesDir, path.join(tmp, 'classes'));
     else fs.copyFileSync(plan.artifact, path.join(tmp, 'artifact'));
+    fs.writeFileSync(path.join(tmp, 'meta.json'), JSON.stringify(meta || {}), 'utf8');
     fs.rmSync(dest, { recursive: true, force: true });
     fs.renameSync(tmp, dest);
     pruneCache();
@@ -401,14 +454,19 @@ async function execute(body, ctx = {}) {
   };
 
   try {
-    const plan = language === 'java' ? javaPlan({ files, dir, tc }) : cppPlan({ language, files, dir, tc });
+    const plan = planFor({ language, files, dir, tc, debug: Boolean(ctx.debugBuild) });
 
-    const cacheKey = ctx.useCache === false ? null : cacheKeyFor({ language, files, tc });
+    // Only compiled languages benefit: for Python/JS the "compile" is a syntax check.
+    // Debug builds carry different flags, so they never share the normal cache.
+    const cacheKey =
+      ctx.useCache === false || ctx.debugBuild || plan.kind === 'python' || plan.kind === 'javascript'
+        ? null
+        : cacheKeyFor({ language, files, tc });
     let compileResult = null;
-    let cached = false;
+    let cachedMeta = cacheKey ? cacheRestore(cacheKey, plan, language) : null;
+    let cached = Boolean(cachedMeta);
 
-    if (cacheKey && cacheRestore(cacheKey, plan, language)) {
-      cached = true;
+    if (cached) {
       compileResult = {
         stdout: '', stderr: '', exitCode: 0, wallMs: 0, timedOut: false,
         peakMemoryBytes: null, stdoutTruncated: false, stderrTruncated: false,
@@ -428,17 +486,32 @@ async function execute(body, ctx = {}) {
     }
 
     const raw = `${compileResult.stdout}${compileResult.stderr}`;
-    const parsed = diagnostics.parse(raw, { workDir: dir, sources, language });
+    // A cached build still owns its warnings, so they are replayed from the entry.
+    const parsed = cached
+      ? {
+          diagnostics: cachedMeta.diagnostics || [],
+          errors: cachedMeta.errors || 0,
+          warnings: cachedMeta.warnings || 0,
+          truncated: false,
+        }
+      : diagnostics.parse(raw, { workDir: dir, sources, language });
     const compileOk = compileResult.exitCode === 0 && !compileResult.timedOut;
 
-    if (compileOk && !cached && cacheKey) cacheStore(cacheKey, plan, language);
+    if (compileOk && !cached && cacheKey) {
+      cacheStore(cacheKey, plan, language, {
+        raw: raw.slice(0, 64 * 1024),
+        errors: parsed.errors,
+        warnings: parsed.warnings,
+        diagnostics: parsed.diagnostics,
+      });
+    }
 
     response.compile = {
       ok: compileOk,
       cached,
       ms: compileResult.wallMs,
       command: [plan.command, ...plan.args].join(' '),
-      raw,
+      raw: cached ? cachedMeta.raw || '' : raw,
       truncated: Boolean(compileResult.stdoutTruncated || compileResult.stderrTruncated),
       errors: parsed.errors,
       warnings: parsed.warnings,
@@ -506,6 +579,19 @@ async function execute(body, ctx = {}) {
         plan.mainClass,
       ];
       response.meta.mainClass = plan.mainClass;
+      response.meta.heapMB = heapMB;
+    } else if (language === 'python') {
+      // Python's own footprint is small, so the kernel cap is meaningful here too.
+      memoryBytes = limits.memoryMB * 1024 * 1024;
+      hardMemory = true;
+      command = tc.python.bin;
+      args = ['-u', plan.entry];
+    } else if (language === 'javascript') {
+      const heapMB = Math.max(32, Math.floor(limits.memoryMB * 0.8));
+      memoryBytes = limits.memoryMB * 1024 * 1024 * 2;
+      hardMemory = false;
+      command = tc.js.bin;
+      args = [`--max-old-space-size=${heapMB}`, plan.entry];
       response.meta.heapMB = heapMB;
     } else {
       memoryBytes = limits.memoryMB * 1024 * 1024;

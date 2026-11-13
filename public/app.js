@@ -13,6 +13,8 @@
     lang: $('lang'),
     chipCpp: $('chip-cpp'),
     chipJava: $('chip-java'),
+    chipPython: $('chip-python'),
+    chipJs: $('chip-js'),
     fileList: $('file-list'),
     addFile: $('btn-add-file'),
     editorHost: $('editor'),
@@ -71,6 +73,39 @@
     termSend: $('btn-term-send'),
     termClear: $('btn-term-clear'),
     termEcho: $('term-echo'),
+    dbgStart: $('btn-dbg-start'),
+    dbgNext: $('btn-dbg-next'),
+    dbgStep: $('btn-dbg-step'),
+    dbgCont: $('btn-dbg-cont'),
+    dbgOutBtn: $('btn-dbg-out'),
+    dbgStop: $('btn-dbg-stop'),
+    dbgStatus: $('dbg-status'),
+    dbgVars: $('dbg-vars'),
+    dbgFrames: $('dbg-frames'),
+    dbgOut: $('dbg-out'),
+    dbgEvalForm: $('dbg-eval-form'),
+    dbgExpr: $('dbg-expr'),
+    stressIters: $('stress-iters'),
+    stressRun: $('btn-stress-run'),
+    stressStatus: $('stress-status'),
+    stressGen: $('stress-gen'),
+    stressRef: $('stress-ref'),
+    stressResult: $('stress-result'),
+    practiceBtn: $('btn-practice'),
+    popPractice: $('popover-practice'),
+    practiceList: $('practice-list'),
+    problemTitle: $('problem-title'),
+    problemDiff: $('problem-diff'),
+    problemStatement: $('problem-statement'),
+    problemResult: $('problem-result'),
+    problemSubmit: $('btn-problem-submit'),
+    problemReset: $('btn-problem-reset'),
+    themeBtn: $('btn-theme'),
+    shareBtn: $('btn-share'),
+    collabBar: $('collab-bar'),
+    collabText: $('collab-text'),
+    collabCopy: $('btn-collab-copy'),
+    collabLeave: $('btn-collab-leave'),
   };
 
   const DEFAULT_CPP = `#include <iostream>
@@ -102,6 +137,9 @@ public class Main {
     '.c++': 'cpp',
     '.c': 'c',
     '.java': 'java',
+    '.py': 'python',
+    '.js': 'javascript',
+    '.mjs': 'javascript',
     '.h': 'cpp',
     '.hpp': 'cpp',
   };
@@ -110,6 +148,16 @@ public class Main {
     cpp: 'text/x-c++src',
     c: 'text/x-csrc',
     java: 'text/x-java',
+    python: 'python',
+    javascript: 'javascript',
+  };
+
+  const LANG_LABEL = {
+    cpp: 'C++',
+    c: 'C',
+    java: 'Java',
+    python: 'Python',
+    javascript: 'JavaScript',
   };
 
   let state = loadState();
@@ -121,6 +169,9 @@ public class Main {
   let markHandles = [];
   let lastResult = null;
   const session = { id: null, source: null, running: false };
+  const debug = { id: null, active: false, paused: false, bps: [] };
+  let debugLineMark = null;
+  const collab = { roomId: null, clientId: null, rev: 0, source: null, applying: false, people: [], queue: [], pumping: false, resyncing: false, lastDoc: '' };
 
   // ------------------------------------------------------------ state
 
@@ -133,6 +184,9 @@ public class Main {
       tests: [{ input: '', expected: '' }],
       limits: { timeMs: 5000, memoryMB: 256 },
       panelHeight: 260,
+      breakpoints: [],
+      problem: null,
+      theme: 'dark',
     };
   }
 
@@ -146,6 +200,7 @@ public class Main {
       if (!Array.isArray(merged.files) || !merged.files.length) merged.files = base.files;
       merged.activeFile = Math.min(Math.max(0, merged.activeFile | 0), merged.files.length - 1);
       if (!Array.isArray(merged.tests)) merged.tests = base.tests;
+      if (!Array.isArray(merged.breakpoints)) merged.breakpoints = [];
       merged.limits = { ...base.limits, ...(merged.limits || {}) };
       return merged;
     } catch {
@@ -202,7 +257,7 @@ public class Main {
       const cm = window.CodeMirror(host, {
         value: currentFile() ? currentFile().content : '',
         mode: MODE[fileLanguage(currentFile()) || 'cpp'],
-        gutters: ['mc-gutter', 'CodeMirror-linenumbers'],
+        gutters: ['mc-breakpoints', 'mc-gutter', 'CodeMirror-linenumbers'],
         indentUnit: 4,
         tabSize: 4,
         indentWithTabs: false,
@@ -218,7 +273,20 @@ public class Main {
           'Shift-Cmd-Enter': () => run(true),
         },
       });
-      cm.on('change', () => {
+      cm.on('change', (instance, change) => {
+        if (collab.roomId && !collab.applying && change.origin !== 'collab' && change.origin !== 'setValue') {
+          if (change.next) {
+            // multi-change batch (undo, multi-cursor): send the whole document
+            const full = instance.getValue();
+            enqueueCollabOp({ pos: 0, del: collab.lastDoc.length, ins: full });
+            collab.lastDoc = full;
+          } else {
+            const from = instance.indexFromPos(change.from);
+            const to = instance.indexFromPos(change.to);
+            enqueueCollabOp({ pos: from, del: to - from, ins: change.text.join('\n') });
+          }
+        }
+        collab.lastDoc = instance.getValue();
         syncActive();
         save();
         scheduleOutline();
@@ -226,6 +294,9 @@ public class Main {
       cm.on('cursorActivity', () => {
         const pos = cm.getCursor();
         els.statusPos.textContent = `Ln ${pos.line + 1}, Col ${pos.ch + 1}`;
+      });
+      cm.on('gutterClick', (instance, line, gutter) => {
+        if (gutter === 'mc-breakpoints') toggleBreakpoint(line + 1);
       });
       editor = {
         kind: 'cm',
@@ -259,6 +330,22 @@ public class Main {
         clearGutter: () => {
           try {
             cm.clearGutter('mc-gutter');
+          } catch {
+            /* ignore */
+          }
+        },
+        clearBreakpoints: () => {
+          try {
+            cm.clearGutter('mc-breakpoints');
+          } catch {
+            /* ignore */
+          }
+        },
+        setBreakpoint: (line) => {
+          const dot = document.createElement('div');
+          dot.className = 'mc-bp-dot';
+          try {
+            cm.setGutterMarker(line - 1, 'mc-breakpoints', dot);
           } catch {
             /* ignore */
           }
@@ -322,6 +409,8 @@ public class Main {
         markLine: () => {},
         clearGutter: () => {},
         setGutter: () => {},
+        clearBreakpoints: () => {},
+        setBreakpoint: () => {},
         flashLine: () => {},
       };
     }
@@ -383,6 +472,7 @@ public class Main {
     editor.setMode(MODE[fileLanguage(f) || 'cpp']);
     renderFiles();
     refreshMarkers();
+    renderBreakpoints();
     renderOutline();
     updateLanguageBadge();
     save();
@@ -404,8 +494,14 @@ public class Main {
   }
 
   function addFile() {
-    const lang = effectiveLanguage() === 'java' ? 'java' : 'cpp';
-    const suggestion = lang === 'java' ? 'Helper.java' : 'helper.cpp';
+    const lang = effectiveLanguage();
+    const names = {
+      java: 'Helper.java',
+      python: 'helper.py',
+      javascript: 'helper.js',
+      c: 'helper.c',
+    };
+    const suggestion = names[lang] || 'helper.cpp';
     const name = window.prompt('New file name', ensureUniqueName(suggestion));
     if (!name) return;
     if (!validName(name)) return toast('Invalid file name.', true);
@@ -456,7 +552,7 @@ public class Main {
 
   function updateLanguageBadge() {
     const lang = effectiveLanguage();
-    const label = lang === 'mixed' ? 'mixed!' : lang === 'cpp' ? 'C++' : lang === 'c' ? 'C' : 'Java';
+    const label = lang === 'mixed' ? 'mixed!' : LANG_LABEL[lang] || lang;
     els.statusLang.textContent = state.language === 'auto' ? `auto \u2192 ${label}` : label;
   }
 
@@ -466,6 +562,8 @@ public class Main {
     els.panelTabs.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== name));
     if (name === 'stdin') els.stdin.focus();
+    if (name === 'stress') ensureStressTemplates();
+    if (name === 'problem') ensureProblemLoaded();
   }
 
   // The user's chosen panel height is kept as-is; only the rendered height is
@@ -565,15 +663,15 @@ public class Main {
       }
       if (!res.ok && data.error) throw new Error(data.error);
       renderResult(data, useTests);
+      setBusy(false);
+      if (health) els.statusLauncher.textContent = health.launcher === 'jobobject' ? 'kernel job object' : 'userspace fallback';
+      return data;
     } catch (err) {
       els.streams.textContent = '';
       renderStream('Program', `Request failed: ${err.message}\n\nIs the server running? Start it with:  node server.js`, 'stderr');
       setBusy(false);
-      return;
+      return null;
     }
-
-    setBusy(false);
-    if (health) els.statusLauncher.textContent = health.launcher === 'jobobject' ? 'kernel job object' : 'userspace fallback';
   }
 
   function renderResult(data, useTests) {
@@ -1097,6 +1195,12 @@ public class Main {
       health = await res.json();
       setChip(els.chipCpp, health.toolchains.cpp.ok, `g++ ${shortVersion(health.toolchains.cpp.version, 'missing')}`);
       setChip(els.chipJava, health.toolchains.java.ok, `javac ${shortVersion(health.toolchains.java.version, 'missing')}`);
+      if (els.chipPython && health.toolchains.python) {
+        setChip(els.chipPython, health.toolchains.python.ok, `py ${shortVersion(health.toolchains.python.version, 'missing')}`);
+      }
+      if (els.chipJs && health.toolchains.javascript) {
+        setChip(els.chipJs, health.toolchains.javascript.ok, `node ${shortVersion(health.toolchains.javascript.version, 'missing')}`);
+      }
       els.statusLauncher.textContent = health.launcher === 'jobobject' ? 'kernel job object' : 'userspace fallback';
       updateBadges({ compile: { errors: 0, warnings: 0 } });
 
@@ -1197,7 +1301,7 @@ public class Main {
   }
 
   function hidePopovers() {
-    [els.popLimits, els.popExamples, els.popSnippets, els.popExport].forEach((p) => {
+    [els.popLimits, els.popExamples, els.popSnippets, els.popExport, els.popPractice].forEach((p) => {
       if (p) p.classList.add('hidden');
     });
   }
@@ -1216,9 +1320,20 @@ public class Main {
       showPopover(els.popExamples);
     });
 
-    [els.popLimits, els.popExamples, els.popSnippets, els.popExport].forEach((p) => {
+    [els.popLimits, els.popExamples, els.popSnippets, els.popExport, els.popPractice].forEach((p) => {
       if (p) p.addEventListener('click', (e) => e.stopPropagation());
     });
+
+    if (els.practiceBtn) {
+      els.practiceBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openPractice();
+      });
+    }
+    if (els.problemSubmit) {
+      els.problemSubmit.addEventListener('click', submitProblem);
+      els.problemReset.addEventListener('click', resetProblemCode);
+    }
 
     els.snippetsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1242,6 +1357,781 @@ public class Main {
     };
     els.limitTime.addEventListener('change', commit);
     els.limitMem.addEventListener('change', commit);
+  }
+
+  // ------------------------------------------------------------ debugger
+
+  function renderBreakpoints() {
+    if (!editor) return;
+    editor.clearBreakpoints();
+    const file = currentFile();
+    if (!file) return;
+    state.breakpoints
+      .filter((b) => b.file === file.name)
+      .forEach((b) => editor.setBreakpoint(b.line));
+  }
+
+  async function toggleBreakpoint(line) {
+    const file = currentFile();
+    if (!file) return;
+    const idx = state.breakpoints.findIndex((b) => b.file === file.name && b.line === line);
+    const removing = idx >= 0;
+    if (removing) state.breakpoints.splice(idx, 1);
+    else state.breakpoints.push({ file: file.name, line });
+    renderBreakpoints();
+    save();
+    els.statusLeft.textContent = `${removing ? 'Removed' : 'Set'} breakpoint at ${file.name}:${line}`;
+
+    if (debug.id) {
+      const serverBp = debug.bps.find((b) => b.file === file.name && b.line === line);
+      if (removing && serverBp) await dbgCommand('breakpoint-remove', { bpId: serverBp.id });
+      else if (!removing) await dbgCommand('breakpoint-add', { file: file.name, line });
+    }
+  }
+
+  function markDebugLine(line) {
+    if (!editor || editor.kind !== 'cm') return;
+    if (debugLineMark != null) {
+      try {
+        editor.cm.removeLineClass(debugLineMark, 'background', 'cm-debug-line');
+      } catch {
+        /* ignore */
+      }
+    }
+    debugLineMark = line - 1;
+    try {
+      editor.cm.addLineClass(debugLineMark, 'background', 'cm-debug-line');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function startDebug() {
+    if (debug.active) await stopDebug(true);
+    els.dbgOut.textContent = '';
+    els.dbgStatus.textContent = 'Compiling with debug symbols\u2026';
+    els.dbgStart.disabled = true;
+    try {
+      const payload = buildPayload();
+      payload.breakpoints = state.breakpoints.slice(0, 50);
+      const res = await fetch('api/debug/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        if (data.compile) {
+          problemsCache = data.compile.diagnostics || [];
+          state.problemIndex = -1;
+          renderProblems(problemsCache);
+          refreshMarkers();
+          const first = problemsCache.find((d) => d.severity === 'error' && d.file && d.line);
+          if (first) jumpToDiagnostic(first);
+          showTab('problems');
+        }
+        els.dbgStatus.textContent = data.error || 'Debug failed.';
+        toast(data.error || 'Debug failed', true);
+        return;
+      }
+      debug.id = data.sessionId;
+      debug.active = true;
+      showTab('debug');
+      renderDebug(data.state);
+    } catch (err) {
+      els.dbgStatus.textContent = err.message;
+      toast(err.message, true);
+    } finally {
+      els.dbgStart.disabled = false;
+    }
+  }
+
+  async function dbgCommand(action, extra) {
+    if (!debug.id) return;
+    try {
+      const res = await fetch(`api/debug/${encodeURIComponent(debug.id)}/cmd`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...(extra || {}) }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'Debug command failed.');
+      renderDebug(data.state);
+    } catch (err) {
+      toast(err.message, true);
+      els.dbgStatus.textContent = err.message;
+    }
+  }
+
+  async function stopDebug(silent) {
+    if (debug.id) {
+      try {
+        await fetch(`api/debug/${encodeURIComponent(debug.id)}/stop`, { method: 'POST' });
+      } catch {
+        /* already gone */
+      }
+    }
+    debug.id = null;
+    debug.active = false;
+    debug.paused = false;
+    debug.bps = [];
+    setDebugControls(false);
+    if (debugLineMark != null && editor && editor.kind === 'cm') {
+      try {
+        editor.cm.removeLineClass(debugLineMark, 'background', 'cm-debug-line');
+      } catch {
+        /* ignore */
+      }
+      debugLineMark = null;
+    }
+    if (!silent) els.dbgStatus.textContent = 'Debugging stopped.';
+  }
+
+  function setDebugControls(paused) {
+    if (!els.dbgNext) return;
+    debug.paused = paused;
+    els.dbgNext.disabled = !paused;
+    els.dbgStep.disabled = !paused;
+    els.dbgCont.disabled = !paused;
+    if (els.dbgOutBtn) els.dbgOutBtn.disabled = !paused;
+    els.dbgStop.disabled = !debug.active;
+  }
+
+  function renderDebug(st) {
+    if (!st) return;
+    debug.bps = st.breakpoints || [];
+
+    if (st.output) {
+      els.dbgOut.textContent += st.output;
+      els.dbgOut.scrollTop = els.dbgOut.scrollHeight;
+    }
+    if (st.evaluation) {
+      const line = st.evaluation.error
+        ? `> ${st.evaluation.expr} => error: ${st.evaluation.error}\n`
+        : `> ${st.evaluation.expr} => ${st.evaluation.value}\n`;
+      els.dbgOut.textContent += line;
+      els.dbgOut.scrollTop = els.dbgOut.scrollHeight;
+    }
+
+    const paused = st.status === 'paused';
+    setDebugControls(paused);
+
+    if (st.status === 'exited') {
+      els.dbgStatus.textContent = `Program finished${st.exitCode == null ? '' : ` (exit ${st.exitCode})`}`;
+      debug.active = false;
+      debug.id = null;
+      setDebugControls(false);
+    } else if (paused && st.location) {
+      els.dbgStatus.textContent = `Paused at ${st.location.file}:${st.location.line} in ${st.location.func}()`;
+    } else {
+      els.dbgStatus.textContent = st.status;
+    }
+
+    // variables
+    els.dbgVars.textContent = '';
+    if (!st.variables || !st.variables.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = paused ? 'No local variables in this frame.' : 'Not paused.';
+      els.dbgVars.appendChild(empty);
+    } else {
+      st.variables.forEach((v) => {
+        const row = document.createElement('div');
+        row.className = 'dbg-var';
+        const name = document.createElement('span');
+        name.className = 'vname';
+        name.textContent = v.name;
+        const type = document.createElement('span');
+        type.className = 'vtype';
+        type.textContent = v.type;
+        const value = document.createElement('span');
+        value.className = `vvalue${v.value == null ? ' none' : ''}`;
+        value.textContent = v.value == null ? '(complex)' : v.value;
+        row.append(name, type, value);
+        els.dbgVars.appendChild(row);
+      });
+    }
+
+    // stack
+    els.dbgFrames.textContent = '';
+    (st.frames || []).forEach((f, i) => {
+      const btn = document.createElement('button');
+      btn.className = `dbg-frame${i === 0 ? ' current' : ''}`;
+      btn.type = 'button';
+      btn.textContent = `#${f.level} ${f.func}()  ${f.file || '?'}:${f.line ?? '?'}`;
+      btn.addEventListener('click', () => dbgCommand('frame', { level: f.level }));
+      els.dbgFrames.appendChild(btn);
+    });
+
+    // follow execution in the editor
+    if (paused && st.location && st.location.line) {
+      const idx = state.files.findIndex((f) => f.name.toLowerCase() === String(st.location.file || '').toLowerCase());
+      if (idx >= 0) {
+        if (idx !== state.activeFile) switchFile(idx);
+        editor.setCursor(st.location.line, 1);
+        markDebugLine(st.location.line);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ theme
+
+  function resolvedTheme(theme) {
+    if (theme === 'light' || theme === 'dark') return theme;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+
+  function applyTheme(theme) {
+    const value = resolvedTheme(theme || state.theme);
+    document.documentElement.dataset.theme = value;
+    if (els.themeBtn) els.themeBtn.textContent = value === 'light' ? '\u2600' : '\u263E';
+    if (editor && editor.refresh) {
+      setTimeout(() => {
+        try {
+          editor.refresh();
+        } catch {
+          /* ignore */
+        }
+      }, 40);
+    }
+  }
+
+  function toggleTheme() {
+    state.theme = resolvedTheme(state.theme) === 'light' ? 'dark' : 'light';
+    applyTheme(state.theme);
+    save();
+  }
+
+  // ------------------------------------------------------------ live sharing / collaboration
+
+  function collabLink() {
+    return `${location.origin}${location.pathname}#room=${collab.roomId}`;
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function collabName() {
+    let name = null;
+    try {
+      name = sessionStorage.getItem('mc-collab-name');
+    } catch {
+      /* ignore */
+    }
+    if (!name) {
+      name = `guest-${Math.random().toString(36).slice(2, 6)}`;
+      try {
+        sessionStorage.setItem('mc-collab-name', name);
+      } catch {
+        /* ignore */
+      }
+    }
+    return name;
+  }
+
+  function updateCollabBar() {
+    if (!els.collabBar) return;
+    const people = collab.people;
+    const names = people.map((p) => p.name).join(', ');
+    els.collabText.textContent = people.length
+      ? `Live \u2014 ${people.length} ${people.length === 1 ? 'person' : 'people'}${names ? ` (${names})` : ''}`
+      : 'Live \u2014 waiting for others';
+  }
+
+  async function startShare() {
+    if (collab.roomId) {
+      const ok = await copyText(collabLink());
+      return toast(ok ? 'Link copied.' : collabLink());
+    }
+    const file = currentFile();
+    if (!file) return;
+    try {
+      const res = await fetch('api/collab/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName: file.name, language: state.language, content: file.content }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not start sharing.');
+      joinRoom(data.room.id);
+      history.replaceState(null, '', `#room=${data.room.id}`);
+      const ok = await copyText(collabLink());
+      toast(ok ? 'Live session started \u2014 link copied.' : 'Live session started.');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  function joinRoom(roomId) {
+    collab.roomId = roomId;
+    collab.clientId =
+      window.crypto && crypto.randomUUID ? crypto.randomUUID() : `c${Math.random().toString(36).slice(2)}`;
+    collab.rev = 0;
+    collab.queue.length = 0;
+    collab.lastDoc = editor ? editor.getValue() : '';
+    const url = `api/collab/${encodeURIComponent(roomId)}/stream?clientId=${encodeURIComponent(collab.clientId)}&name=${encodeURIComponent(collabName())}`;
+    const es = new EventSource(url);
+    collab.source = es;
+    es.onmessage = onCollabEvent;
+    els.collabBar.classList.remove('hidden');
+    updateCollabBar();
+  }
+
+  function onCollabEvent(ev) {
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+
+    if (msg.t === 'presence') {
+      collab.people = msg.clients || [];
+      updateCollabBar();
+      return;
+    }
+
+    if (msg.t === 'snapshot') {
+      collab.rev = msg.rev;
+      collab.applying = true;
+      editor.setValue(msg.doc);
+      collab.applying = false;
+      collab.lastDoc = msg.doc;
+      const file = currentFile();
+      if (file) {
+        file.content = msg.doc;
+        if (msg.fileName) file.name = msg.fileName;
+      }
+      renderFiles();
+      updateLanguageBadge();
+      renderOutline();
+      updateCollabBar();
+      return;
+    }
+
+    if (msg.t === 'ops') {
+      if (msg.by === collab.clientId) {
+        collab.rev = msg.rev;
+        return;
+      }
+      // Only apply when exactly next and nothing local is pending; otherwise the
+      // server's canonical document wins and we resync.
+      if (msg.rev !== collab.rev + 1 || collab.queue.length || collab.pumping) {
+        scheduleResync();
+        return;
+      }
+      const cm = editor.cm;
+      if (!cm) return;
+      collab.applying = true;
+      try {
+        cm.replaceRange(msg.op.ins, cm.posFromIndex(msg.op.pos), cm.posFromIndex(msg.op.pos + msg.op.del), 'collab');
+        collab.rev = msg.rev;
+        collab.lastDoc = cm.getValue();
+        const file = currentFile();
+        if (file) file.content = collab.lastDoc;
+      } catch {
+        scheduleResync();
+      } finally {
+        collab.applying = false;
+      }
+    }
+  }
+
+  function scheduleResync() {
+    if (collab.resyncing || !collab.roomId) return;
+    collab.resyncing = true;
+    setTimeout(async () => {
+      try {
+        const res = await fetch(`api/collab/${encodeURIComponent(collab.roomId)}/snapshot`);
+        const snap = await res.json();
+        if (res.ok) {
+          collab.queue.length = 0;
+          collab.rev = snap.rev;
+          collab.applying = true;
+          editor.setValue(snap.doc);
+          collab.applying = false;
+          collab.lastDoc = snap.doc;
+          const file = currentFile();
+          if (file) file.content = snap.doc;
+          renderOutline();
+        }
+      } catch {
+        /* offline */
+      } finally {
+        collab.resyncing = false;
+      }
+    }, 150);
+  }
+
+  function enqueueCollabOp(op) {
+    if (!collab.roomId) return;
+    if (!op.del && !op.ins) return;
+    collab.queue.push(op);
+    pumpCollab();
+  }
+
+  async function pumpCollab() {
+    if (collab.pumping) return;
+    collab.pumping = true;
+    try {
+      while (collab.queue.length && collab.roomId) {
+        const op = collab.queue.shift();
+        const res = await fetch(`api/collab/${encodeURIComponent(collab.roomId)}/ops`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clientId: collab.clientId, rev: collab.rev, op }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.resync) {
+          scheduleResync();
+          break;
+        }
+        collab.rev = data.rev;
+      }
+    } catch {
+      /* transient network error: the next keystroke retries */
+    } finally {
+      collab.pumping = false;
+    }
+  }
+
+  async function leaveCollab(silent) {
+    if (!collab.roomId) return;
+    const id = collab.roomId;
+    try {
+      await fetch(`api/collab/${encodeURIComponent(id)}/leave`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: collab.clientId }),
+      });
+    } catch {
+      /* ignore */
+    }
+    if (collab.source) {
+      try {
+        collab.source.close();
+      } catch {
+        /* ignore */
+      }
+      collab.source = null;
+    }
+    collab.roomId = null;
+    collab.clientId = null;
+    collab.rev = 0;
+    collab.queue.length = 0;
+    collab.people = [];
+    els.collabBar.classList.add('hidden');
+    history.replaceState(null, '', location.pathname);
+    if (!silent) toast('Left the live session.');
+  }
+
+  // ------------------------------------------------------------ practice problems
+
+  let practiceLoaded = false;
+
+  function problemFileName(lang) {
+    if (lang === 'java') return 'Main.java';
+    if (lang === 'python') return 'main.py';
+    if (lang === 'javascript') return 'main.js';
+    return 'main.cpp';
+  }
+
+  async function openPractice() {
+    showPopover(els.popPractice);
+    if (practiceLoaded) return;
+    try {
+      const res = await fetch('api/problems');
+      const data = await res.json();
+      els.practiceList.textContent = '';
+      (data.problems || []).forEach((p) => {
+        const row = document.createElement('div');
+        row.className = 'pr-item';
+        const name = document.createElement('div');
+        name.className = 'pr-name';
+        name.textContent = p.title;
+        const tags = document.createElement('div');
+        tags.className = 'pr-tags';
+        tags.textContent = `${p.difficulty} \u00b7 ${p.tags.join(', ')}`;
+        name.appendChild(tags);
+        const counts = document.createElement('div');
+        counts.className = 'pr-tags';
+        counts.textContent = `${p.samples}+${p.hidden} tests`;
+        row.append(name, counts);
+        row.addEventListener('click', () => loadProblem(p.id));
+        els.practiceList.appendChild(row);
+      });
+      practiceLoaded = true;
+    } catch {
+      els.practiceList.textContent = 'Could not load problems.';
+    }
+  }
+
+  async function loadProblem(id) {
+    try {
+      const res = await fetch(`api/problems/${encodeURIComponent(id)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Problem not found.');
+      const p = data.problem;
+      const lang = effectiveLanguage() === 'java' ? 'java' : effectiveLanguage() === 'python' ? 'python' : 'cpp';
+      const starter = p.starters[lang] || p.starters.cpp;
+      const tests = [...p.samples, ...p.hidden].map((t) => ({ input: t.input, expected: t.expected }));
+
+      applyProgram(
+        {
+          files: [{ name: problemFileName(lang), content: starter }],
+          stdin: p.samples.length ? p.samples[0].input : '',
+          tests,
+          language: lang,
+        },
+        `Loaded "${p.title}"`
+      );
+
+      state.problem = {
+        id: p.id,
+        title: p.title,
+        difficulty: p.difficulty,
+        sampleCount: p.samples.length,
+        hiddenCount: p.hidden.length,
+        starter,
+        lang,
+      };
+      save();
+      renderProblem(p);
+      showTab('problem');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  function renderProblem(p) {
+    els.problemTitle.textContent = p.title;
+    els.problemDiff.textContent = p.difficulty;
+    els.problemDiff.className = `badge ${p.difficulty}`;
+    els.problemStatement.textContent = p.statement;
+    els.problemResult.textContent = '';
+  }
+
+  function ensureProblemLoaded() {
+    if (state.problem) {
+      els.problemTitle.textContent = state.problem.title;
+      els.problemDiff.textContent = state.problem.difficulty;
+      els.problemDiff.className = `badge ${state.problem.difficulty}`;
+      if (!els.problemStatement.textContent || els.problemStatement.textContent.startsWith('Pick a problem')) {
+        loadProblem(state.problem.id);
+      }
+    } else {
+      loadProblem('two-sum');
+    }
+  }
+
+  async function submitProblem() {
+    const info = state.problem;
+    if (!info) return toast('Load a problem first.', true);
+    els.problemSubmit.disabled = true;
+    els.problemResult.textContent = 'Running all tests\u2026';
+    try {
+      const data = await run(true);
+      if (!data) throw new Error('Run failed.');
+      els.problemResult.textContent = '';
+      const summary = data.testsSummary || { total: 0, passed: 0, failed: 0 };
+      const allPass = summary.failed === 0 && summary.total > 0;
+
+      const banner = document.createElement('span');
+      banner.className = `pr-banner ${allPass ? 'ok' : 'bad'}`;
+      banner.textContent = allPass
+        ? `ACCEPTED \u2014 ${summary.passed}/${summary.total} tests passed`
+        : `${summary.failed} of ${summary.total} tests failed`;
+      els.problemResult.appendChild(banner);
+
+      if (!allPass) {
+        const failed = (data.tests || []).filter((t) => t.verdict !== 'AC' && t.verdict !== 'OK');
+        const first = failed[0];
+        if (first) {
+          const which = first.index <= info.sampleCount ? 'sample' : 'hidden';
+          const box = document.createElement('div');
+          box.className = 'pr-fail';
+          box.textContent =
+            `First failure: ${which} test ${first.index} (${first.verdict})\n` +
+            `input:    ${first.input.trim()}\n` +
+            `expected: ${(first.expected || '').trim()}\n` +
+            `actual:   ${(first.actual || '').trim()}`;
+          box.style.whiteSpace = 'pre-wrap';
+          els.problemResult.appendChild(box);
+        }
+      }
+    } catch (err) {
+      els.problemResult.textContent = err.message;
+    } finally {
+      els.problemSubmit.disabled = false;
+    }
+  }
+
+  function resetProblemCode() {
+    const info = state.problem;
+    if (!info) return;
+    const file = currentFile();
+    if (!file) return;
+    if (!window.confirm(`Discard your changes to ${file.name}?`)) return;
+    file.content = info.starter;
+    editor.setValue(info.starter);
+    renderOutline();
+    refreshMarkers();
+    save();
+    toast('Starter code restored.');
+  }
+
+  // ------------------------------------------------------------ stress testing
+
+  const STRESS_TEMPLATES = {
+    cpp: {
+      ext: 'cpp',
+      gen: `// reads a seed on stdin, prints one random test case
+#include <iostream>
+#include <cstdlib>
+
+int main() {
+    int seed;
+    std::cin >> seed;
+    std::srand(seed * 7919);
+    int n = 1 + std::rand() % 8;
+    std::cout << n << "\\n";
+    for (int i = 0; i < n; i++) std::cout << (std::rand() % 21 - 10) << " ";
+    std::cout << "\\n";
+}
+`,
+      ref: `// reads the test case, prints the answer (write the obvious slow version)
+#include <iostream>
+
+int main() {
+    int n;
+    if (!(std::cin >> n)) return 0;
+    long long best = -1000000000;
+    for (int i = 0; i < n; i++) {
+        long long x;
+        std::cin >> x;
+        if (x > best) best = x;
+    }
+    std::cout << best << "\\n";
+}
+`,
+    },
+    python: {
+      ext: 'py',
+      gen: `# reads a seed, prints one random test case
+import random, sys
+
+seed = int(sys.stdin.readline())
+random.seed(seed)
+n = 1 + random.randrange(8)
+print(n)
+print(*[random.randint(-10, 10) for _ in range(n)])
+`,
+      ref: `# reads the test case, prints the answer
+import sys
+
+n = int(sys.stdin.readline())
+print(max(map(int, sys.stdin.read().split())))
+`,
+    },
+    javascript: {
+      ext: 'js',
+      gen: `// reads a seed, prints one random test case
+const seed = Number(require('fs').readFileSync(0, 'utf8').trim());
+let s = seed * 7919;
+const rand = () => ((s = (s * 1103515245 + 12345) % 2147483648) % 1000);
+const n = 1 + (rand() % 8);
+const values = Array.from({ length: n }, () => (rand() % 21) - 10);
+console.log(n);
+console.log(values.join(' '));
+`,
+      ref: `// reads the test case, prints the answer
+const lines = require('fs').readFileSync(0, 'utf8').trim().split('\\n');
+const n = Number(lines[0]);
+const values = (lines[1] || '').trim().split(/\\s+/).slice(0, n).map(Number);
+console.log(Math.max(...values));
+`,
+    },
+  };
+
+  let stressTemplatesReady = false;
+
+  function ensureStressTemplates() {
+    if (stressTemplatesReady || !els.stressGen) return;
+    const t = STRESS_TEMPLATES[effectiveLanguage()] || STRESS_TEMPLATES.cpp;
+    els.stressGen.value = t.gen;
+    els.stressRef.value = t.ref;
+    stressTemplatesReady = true;
+  }
+
+  function stressBlock(label, text, cls) {
+    const box = document.createElement('div');
+    box.className = 'stress-block';
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl';
+    lbl.textContent = label;
+    box.append(lbl, document.createTextNode(text == null ? '(none)' : String(text)));
+    if (cls) box.style.color = cls;
+    return box;
+  }
+
+  async function runStress() {
+    ensureStressTemplates();
+    const lang = effectiveLanguage();
+    if (lang === 'mixed') return toast('Pick one language before stress testing.', true);
+    const tpl = STRESS_TEMPLATES[lang] || STRESS_TEMPLATES.cpp;
+
+    els.stressRun.disabled = true;
+    els.stressStatus.textContent = 'Compiling three programs\u2026';
+    els.stressResult.textContent = '';
+
+    try {
+      const res = await fetch('api/stress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          language: lang,
+          solution: { files: state.files.map((f) => ({ name: f.name, content: f.content })) },
+          generator: { files: [{ name: `gen.${tpl.ext}`, content: els.stressGen.value }] },
+          reference: { files: [{ name: `ref.${tpl.ext}`, content: els.stressRef.value }] },
+          iterations: Number(els.stressIters.value) || 25,
+          limits: state.limits,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Stress test failed.');
+
+      const banner = document.createElement('div');
+      banner.className = `stress-banner ${data.verdict === 'PASS' ? 'ok' : 'bad'}`;
+      banner.textContent =
+        data.verdict === 'PASS'
+          ? `PASS \u2014 ${data.ran} random cases agreed`
+          : `FAIL \u2014 disagreed at seed ${data.counterexample.seed}`;
+      els.stressResult.appendChild(banner);
+
+      if (data.counterexample) {
+        const c = data.counterexample;
+        els.stressResult.appendChild(stressBlock('input', c.input));
+        els.stressResult.appendChild(stressBlock('expected (reference)', c.expected));
+        els.stressResult.appendChild(stressBlock('actual (your program)', c.actual));
+        if (c.stderr && c.stderr.trim()) els.stressResult.appendChild(stressBlock('stderr', c.stderr.trim()));
+      }
+
+      els.stressStatus.textContent =
+        data.verdict === 'PASS'
+          ? `${data.ran} cases matched the reference.`
+          : 'Found a counterexample \u2014 fix your program and run again.';
+    } catch (err) {
+      els.stressStatus.textContent = err.message;
+      toast(err.message, true);
+    } finally {
+      els.stressRun.disabled = false;
+    }
   }
 
   // ------------------------------------------------------------ terminal (interactive run)
@@ -1596,6 +2486,8 @@ public class Main {
     els.limitMem.value = state.limits.memoryMB;
 
     buildEditor();
+    applyTheme(state.theme);
+    collab.lastDoc = editor.getValue();
     renderFiles();
     renderTests();
     renderOutline();
@@ -1663,6 +2555,34 @@ public class Main {
     if (els.snipSave) els.snipSave.addEventListener('click', saveSnippet);
     if (els.exportHtml) els.exportHtml.addEventListener('click', exportHtmlReport);
     if (els.exportCopy) els.exportCopy.addEventListener('click', copyCode);
+    if (els.stressRun) els.stressRun.addEventListener('click', runStress);
+
+    if (els.themeBtn) els.themeBtn.addEventListener('click', toggleTheme);
+    if (els.shareBtn) els.shareBtn.addEventListener('click', startShare);
+    if (els.collabCopy) {
+      els.collabCopy.addEventListener('click', async () => {
+        const ok = await copyText(collabLink());
+        toast(ok ? 'Link copied.' : collabLink());
+      });
+    }
+    if (els.collabLeave) els.collabLeave.addEventListener('click', () => leaveCollab(false));
+
+    if (els.dbgStart) {
+      els.dbgStart.addEventListener('click', startDebug);
+      els.dbgNext.addEventListener('click', () => dbgCommand('next'));
+      els.dbgStep.addEventListener('click', () => dbgCommand('step'));
+      els.dbgCont.addEventListener('click', () => dbgCommand('continue'));
+      if (els.dbgOutBtn) els.dbgOutBtn.addEventListener('click', () => dbgCommand('finish'));
+      els.dbgStop.addEventListener('click', () => stopDebug(false));
+      els.dbgEvalForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const expr = els.dbgExpr.value.trim();
+        if (!expr) return;
+        els.dbgExpr.value = '';
+        dbgCommand('evaluate', { expr });
+      });
+    }
+    renderBreakpoints();
 
     document.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -1677,6 +2597,15 @@ public class Main {
       } else if (e.key === 'F8') {
         e.preventDefault();
         gotoProblem(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'F10' && debug.active && debug.paused) {
+        e.preventDefault();
+        dbgCommand('next');
+      } else if (e.key === 'F11' && debug.active && debug.paused) {
+        e.preventDefault();
+        dbgCommand(e.shiftKey ? 'finish' : 'step');
+      } else if (e.key === 'F5' && debug.active) {
+        e.preventDefault();
+        dbgCommand('continue');
       } else if (e.key === 'Escape') {
         hidePopovers();
       }
@@ -1698,6 +2627,10 @@ public class Main {
 
     loadHealth(false);
     setTimeout(() => editor.focus(), 60);
+
+    // arriving through a share link joins the room automatically
+    const roomMatch = /^#room=([A-Za-z0-9_-]{4,64})$/.exec(location.hash);
+    if (roomMatch) setTimeout(() => joinRoom(roomMatch[1]), 350);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
