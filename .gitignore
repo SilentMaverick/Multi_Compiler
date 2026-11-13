@@ -1,0 +1,17 @@
+# downloaded toolchains (recreate with: npm run setup)
+tools/
+
+# build scratch space
+.build/
+.cache/
+
+# native launcher output (recreate with: npm run build:native)
+native/bin/
+
+# editor assets (recreate with: scripts/vendor-assets.ps1)
+public/vendor/
+
+node_modules/
+*.log
+
+*.zip

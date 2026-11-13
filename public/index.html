@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Multi-Coder &middot; C++ / Java</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%234f8cff'/><path d='M9 11l-4 5 4 5M23 11l4 5-4 5' stroke='%23fff' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+<link rel="stylesheet" href="vendor/codemirror.min.css" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">&lt;/&gt;</span>
+      <span class="brand-name">Multi-Coder</span>
+    </div>
+
+    <label class="field">
+      <span class="field-label">Language</span>
+      <select id="lang" class="select">
+        <option value="auto">Auto-detect</option>
+        <option value="cpp">C++</option>
+        <option value="c">C</option>
+        <option value="java">Java</option>
+      </select>
+    </label>
+
+    <div class="toolchain" id="toolchain" title="Toolchain status">
+      <span class="chip chip-muted" id="chip-cpp">g++ &middot; checking</span>
+      <span class="chip chip-muted" id="chip-java">javac &middot; checking</span>
+    </div>
+
+    <div class="spacer"></div>
+
+    <button class="btn ghost" id="btn-examples" title="Load an example">Examples</button>
+    <button class="btn ghost" id="btn-limits" title="Time and memory limits">Limits</button>
+    <button class="btn primary" id="btn-run" title="Compile and run (Ctrl+Enter)">
+      <span class="play">&#9654;</span> Run <kbd>Ctrl</kbd><kbd>&#8629;</kbd>
+    </button>
+  </header>
+
+  <main class="workspace">
+
+    <aside class="files">
+      <div class="files-head">
+        <span>Files</span>
+        <button class="icon-btn" id="btn-add-file" title="Add file">+</button>
+      </div>
+      <ul class="file-list" id="file-list"></ul>
+      <div class="files-foot">.cpp .cc .cxx .c .java</div>
+    </aside>
+
+    <section class="editor-col">
+      <div class="editor-wrap" id="editor-wrap">
+        <div class="editor-host" id="editor"></div>
+      </div>
+
+      <div class="resizer" id="resizer" title="Drag to resize"><span></span></div>
+
+      <section class="panel" id="panel">
+        <div class="panel-tabs" id="panel-tabs">
+          <button class="tab active" data-tab="output">Output</button>
+          <button class="tab" data-tab="problems">Problems <span class="badge hidden" id="badge-problems">0</span></button>
+          <button class="tab" data-tab="tests">Tests <span class="badge hidden" id="badge-tests">0</span></button>
+          <button class="tab" data-tab="stdin">Input (stdin)</button>
+          <div class="spacer"></div>
+          <button class="icon-btn" id="btn-clear" title="Clear output">&#10005;</button>
+        </div>
+
+        <div class="panel-body">
+          <div class="pane" data-pane="output">
+            <div class="run-header" id="run-header">
+              <span class="hint">Press <kbd>Ctrl</kbd><kbd>&#8629;</kbd> to compile &amp; run.</span>
+            </div>
+            <div class="streams" id="streams"></div>
+          </div>
+
+          <div class="pane hidden" data-pane="problems">
+            <div class="problems" id="problems">
+              <div class="empty">No diagnostics yet.</div>
+            </div>
+          </div>
+
+          <div class="pane hidden" data-pane="tests">
+            <div class="tests">
+              <div class="tests-head">
+                <span class="tests-hint">Compare program output against expected output.</span>
+                <div class="spacer"></div>
+                <button class="btn ghost sm" id="btn-add-test">+ Case</button>
+                <button class="btn primary sm" id="btn-run-tests">Run tests</button>
+              </div>
+              <div class="test-list" id="test-list"></div>
+            </div>
+          </div>
+
+          <div class="pane hidden" data-pane="stdin">
+            <textarea id="stdin" class="stdin-box" spellcheck="false" placeholder="Text typed here is fed to the program's standard input."></textarea>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status-left">Ready</span>
+    <div class="spacer"></div>
+    <span id="status-pos">Ln 1, Col 1</span>
+    <span class="sep">|</span>
+    <span id="status-lang">auto</span>
+    <span class="sep">|</span>
+    <span id="status-launcher" title="Process isolation used for runs">&mdash;</span>
+  </footer>
+</div>
+
+<div class="popover hidden" id="popover-limits">
+  <h3>Limits</h3>
+  <label class="pop-field">
+    <span>Wall-clock time (ms)</span>
+    <input type="number" id="limit-time" min="100" max="30000" step="100" />
+  </label>
+  <label class="pop-field">
+    <span>Memory (MB)</span>
+    <input type="number" id="limit-mem" min="16" max="4096" step="16" />
+  </label>
+  <p class="pop-note">For C++ this is a hard kernel limit. For Java it caps the heap (<code>-Xmx</code>).</p>
+</div>
+
+<div class="popover hidden" id="popover-examples">
+  <h3>Examples</h3>
+  <div class="example-list" id="example-list"></div>
+</div>
+
+<div class="toast hidden" id="toast"></div>
+
+<div class="overlay hidden" id="overlay"><div class="spinner"></div></div>
+
+<script src="vendor/codemirror.min.js"></script>
+<script src="vendor/matchbrackets.min.js"></script>
+<script src="vendor/active-line.min.js"></script>
+<script src="vendor/clike.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
