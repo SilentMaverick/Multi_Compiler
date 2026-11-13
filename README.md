@@ -308,15 +308,28 @@ Your files, limits, tests and stdin are kept in `localStorage`, so a refresh doe
 npm test
 ```
 
-* `tests/outline.js` — parser unit tests across C, C++ and Java (nesting, comments,
-  multi-line signatures, lambdas, malformed input).
-* `tests/smoke.js` — end-to-end against the real compilers: run, AC/WA/CE, TLE, MLE,
-  Java multi-class and `OutOfMemoryError`, path-traversal rejection.
+| Suite | Covers |
+|---|---|
+| `tests/outline.js` | the class/function scanner across C, C++ and Java — nesting, comments, multi-line signatures, lambdas, malformed input |
+| `tests/problems.mjs` | every stored expected output in the practice set, checked against an independent solver |
+| `tests/languages.mjs` | Python and JavaScript: run, syntax errors, tracebacks, TLE, tests, mixed-language rejection |
+| `tests/stress.mjs` | generator/reference comparison, counterexample capture, compile failures, Python stress |
+| `tests/smoke.js` | end-to-end against the real compilers: run, AC/WA/CE, TLE, MLE, Java multi-class and `OutOfMemoryError`, path-traversal rejection |
+| `tests/debugger.mjs` | gdb MI: breakpoints, stepping, frames, locals, expression evaluation, clean exit, Java refusal |
+| `tests/collab.mjs` | operational transform: concurrent inserts, deletes, stale-revision resync, SSE relay (auto-skips when no server is running) |
+
+The suites need `npm run setup` first; `tests/collab.mjs` additionally needs `npm start`
+running on the default port (or set `MULTICODER_URL`).
 
 ## Notes and limits of the design
 
-* **No interactive stdin.** Input is provided up front as text, exactly like an online judge.
-  Programs that require a live TTY will behave differently.
+* **Batch stdin vs live sessions.** The Input tab feeds stdin up front, exactly like an
+  online judge; the Terminal tab is the interactive path for programs that prompt.
+* **The debugger is C/C++ only.** Java goes through `Run`; `jdb`/JDWP is a different
+  protocol and is deliberately out of scope.
+* **Collaboration is a few-person tool.** Rooms are in memory, unauthenticated, and
+  bound to whatever address the host serves on. Put authentication and TLS in front of
+  it before letting anyone outside your network connect.
 * **One run at a time per tab**, two globally (`MAX_CONCURRENT_RUNS` in `server.js`).
 * **It executes untrusted code** on your machine. The job object contains the process tree, but
   this is a development tool, not a security boundary — do not expose it to a network you do not
