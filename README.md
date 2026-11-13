@@ -1,7 +1,7 @@
-# Multi-Coder
+﻿# Multi-Coder
 
 A local, browser-based IDE that compiles and runs **C++**, **C** and **Java** side by side.
-Drop code in, press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, get output — with real compilers, real
+Drop code in, press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, get output â€” with real compilers, real
 process limits, and compile errors turned into clickable diagnostics.
 
 It is a thin, dependency-free Node server wrapping your own `g++` / `gcc` / `javac`, plus a
@@ -14,7 +14,7 @@ single-page front-end. Nothing is sent to a third party and nothing needs admin 
 
 ![Multi-Coder running a C++ program](docs/screenshot.png)
 
-Compile errors become clickable, caret-annotated diagnostics — and a failed build
+Compile errors become clickable, caret-annotated diagnostics â€” and a failed build
 takes you straight to the offending line:
 
 ![Problems panel](docs/screenshot-errors.png)
@@ -38,7 +38,7 @@ Programs that prompt for input get a real conversation in the Terminal tab:
 | **Multi-file** | many files per project; Java gets real multi-class compilation |
 | **stdin** | a dedicated input tab, fed to the program |
 | **Terminal** | interactive sessions: the program stays alive, you type and see replies live |
-| **Outline** | live list of classes, methods and free functions — click to jump, filter as you type |
+| **Outline** | live list of classes, methods and free functions â€” click to jump, filter as you type |
 | **Test cases** | input + expected output, run as a batch with an AC/WA/TLE/MLE/RE verdict per case |
 | **Limits** | wall-clock timeout and memory cap, enforced per run |
 | **Diagnostics** | compiler output parsed into `file:line:col`, severity, source line and caret |
@@ -48,7 +48,9 @@ Programs that prompt for input get a real conversation in the Terminal tab:
 | **Practice** | bundled problems with statements, starter code, samples and hidden tests |
 | **Stress testing** | generate random cases, compare against a reference, get the counterexample |
 | **Debugger** | breakpoints, stepping, call stack, locals and expression evaluation (C/C++) |
-| **Live sharing** | share a link and edit the same file with other people in real time |
+| **Live sharing** | share a keyed link and edit the same file with other people in real time |
+| **Visualizer** | while debugging, arrays, vectors, matrices and strings are drawn as cells that light up when they change |
+| **PTY terminal** | the Terminal tab runs programs in a real pseudo console: echo, line editing, ANSI colour |
 | **Themes** | dark and light, switchable from the header |
 | **Build cache** | identical sources reuse the previous binary, so re-runs skip compilation |
 | **Isolation** | every run happens in a throwaway directory with a fresh process tree |
@@ -70,10 +72,10 @@ Verdicts follow the usual competitive-programming vocabulary:
 ## Getting the toolchains
 
 `npm run setup` runs `scripts/bootstrap-toolchains.ps1`, which downloads self-contained
-builds into `tools/` — no installer, no PATH edits, no UAC prompt:
+builds into `tools/` â€” no installer, no PATH edits, no UAC prompt:
 
-* `tools/mingw64` — MinGW-w64 GCC (UCRT, POSIX threads) from winlibs
-* `tools/jdk21` — Eclipse Temurin JDK 21 LTS
+* `tools/mingw64` â€” MinGW-w64 GCC (UCRT, POSIX threads) from winlibs
+* `tools/jdk21` â€” Eclipse Temurin JDK 21 LTS
 
 It then vendors the CodeMirror editor assets into `public/vendor/` and compiles
 `native/bin/jobrunner.exe`, so one command leaves the app fully runnable.
@@ -107,33 +109,41 @@ public/                the IDE (index.html, styles.css, app.js)
 tests/                 outline parser tests + end-to-end suite
 ```
 
-### Interactive terminal
+### Terminal and PTY
 
-A normal run is batch: stdin is written up front and the process is waited on.
-The **Terminal** tab instead starts a session — the program keeps running with
-live pipes, its output streams to the panel, and each line you type is written to
-its stdin immediately. Output travels over Server-Sent Events, input over `POST`,
-so the server stays dependency-free (no WebSocket handshake to hand-roll).
+The **Terminal** tab starts a *session*: the program keeps running with live pipes,
+its output streams to the panel, and each line you type goes to its stdin.
 
-That is what makes prompting programs usable:
-
-```
-Name? › Ada
-Hi Ada
-Count? › 10
-Sum 1..10 = 55
-— session ended (exit 0) —
-```
+With **PTY** ticked (the default on Windows) the program runs inside a real pseudo
+console (`native/ptyhost.exe`, ConPTY), so it behaves exactly as it would in a
+terminal window: the console echoes your typing, line editing works, and ANSI
+colours are rendered as coloured spans rather than escape gibberish. Clear it to
+fall back to plain pipes, which is what a non-Windows host uses.
 
 Sessions are capped at 3 concurrent, expire after 3 minutes, and can be stopped
-from the panel. They run under a plain spawn plus a tree-kill, so they honour the
-time limit but **not** the kernel memory cap the job object provides — use Run for
-resource-limited judging.
+from the panel. They run under a tree-kill, so they honour the time limit but not
+the kernel memory cap â€” use Run for resource-limited judging.
+
+### Debugger and visualizer
+
+The **Debug** tab drives gdb's machine interface: click the left gutter to set a
+breakpoint, then Debug. Step over/in/out, continue, walk the call stack, inspect
+locals and evaluate expressions (<kbd>F5</kbd>/<kbd>F10</kbd>/<kbd>F11</kbd>).
+
+![Algorithm visualizer](docs/screenshot-visualizer.png)
+
+On every stop the **visualizer** draws arrays, `std::vector`s, 2-D matrices and
+strings from the current frame as cells, and highlights the cells that changed since
+the previous step â€” enough to watch a sort or a BFS frontier without adding a single
+`cout`. gdb's own pretty-printers do the decoding; the server parses the printed
+form and the client renders it.
+
+Java debugging is not supported (see the limits below).
 
 ### Snippets and export
 
 **Snippets** saves the whole working copy (files, stdin, tests, language, limits)
-under a name, server-side in `.data/snippets.json` — so it survives clearing site
+under a name, server-side in `.data/snippets.json` â€” so it survives clearing site
 data and is easy to back up. **Export** renders a single self-contained HTML file
 with the escaped source, the last runtime result and per-test verdicts; it prints
 cleanly to PDF and needs no assets or network.
@@ -166,10 +176,16 @@ never cached. Bump `FLAGS_VERSION` in `src/executor.js` when the compile flags c
 
 ### Live sharing
 
-Press **Share** and a link like `http://127.0.0.1:7788/#room=AbC123` is copied.
-Opening it in another browser joins the room: both editors hold the same file and
-edits appear on both sides as you type. The bar above the editor lists who is
-connected.
+Press **Share** and a link like
+`http://127.0.0.1:7788/#room=AbC123&key=â€¦` is copied. Opening it in another browser
+joins the room: both editors hold the same file and edits appear on both sides as
+you type. The bar above the editor lists who is connected.
+
+The `key` is a per-room secret; every read and write (stream, operations, snapshot)
+is rejected with `401` without it, and the room listing never exposes it. The key
+travels in the URL fragment, so it is not sent in a request path or written to a
+server log. Anyone with the link can edit â€” for anything beyond a trusted network,
+put TLS and an authenticating proxy in front.
 
 Synchronisation is **operational transformation** for single-splice edits:
 
@@ -201,7 +217,7 @@ the child inside it, and:
 
 * caps committed memory with `JOB_OBJECT_LIMIT_PROCESS_MEMORY` (a kernel limit, not a poller),
 * reports `PeakProcessMemoryUsed` for the status line,
-* terminates the *entire* process tree when the job closes — so a runaway `fork`/`thread` storm
+* terminates the *entire* process tree when the job closes â€” so a runaway `fork`/`thread` storm
   cannot outlive the request.
 
 If that helper is not built (non-Windows, or `csc.exe` unavailable) the server falls back to
@@ -210,10 +226,10 @@ in the status bar.
 
 Memory semantics differ slightly per language, on purpose:
 
-* **C/C++** — `limits.memoryMB` is a hard commit limit. Allocation failure surfaces as `MLE`
+* **C/C++** â€” `limits.memoryMB` is a hard commit limit. Allocation failure surfaces as `MLE`
   (or `std::bad_alloc`).
-* **Java** — the same number becomes `-Xmx` (heap cap), because a JVM needs metaspace and code
-  cache beyond the heap. `OutOfMemoryError` is reported as `MLE`; a 4× job-object backstop
+* **Java** â€” the same number becomes `-Xmx` (heap cap), because a JVM needs metaspace and code
+  cache beyond the heap. `OutOfMemoryError` is reported as `MLE`; a 4Ã— job-object backstop
   catches anything that escapes the heap.
 
 ### Diagnostics
@@ -261,15 +277,15 @@ Response:
 }
 ```
 
-`GET /api/health` — toolchain versions, launcher mode, cache stats, live sessions.
-`GET /api/examples` — the starter programs.
+`GET /api/health` â€” toolchain versions, launcher mode, cache stats, live sessions.
+`GET /api/examples` â€” the starter programs.
 
 Interactive sessions:
 
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/session/start` | compile and start the program with live pipes; returns a session id |
-| `GET /api/session/:id/stream` | SSE stream of `{t:"o"｜"e",d}` output chunks and a final `{t:"x",code}` |
+| `GET /api/session/:id/stream` | SSE stream of `{t:"o"ï½œ"e",d}` output chunks and a final `{t:"x",code}` |
 | `POST /api/session/:id/input` | `{ "data": "..." }` written straight to the program's stdin |
 | `POST /api/session/:id/stop` | terminate the process tree |
 
@@ -310,7 +326,7 @@ npm test
 
 | Suite | Covers |
 |---|---|
-| `tests/outline.js` | the class/function scanner across C, C++ and Java — nesting, comments, multi-line signatures, lambdas, malformed input |
+| `tests/outline.js` | the class/function scanner across C, C++ and Java â€” nesting, comments, multi-line signatures, lambdas, malformed input |
 | `tests/problems.mjs` | every stored expected output in the practice set, checked against an independent solver |
 | `tests/languages.mjs` | Python and JavaScript: run, syntax errors, tracebacks, TLE, tests, mixed-language rejection |
 | `tests/stress.mjs` | generator/reference comparison, counterexample capture, compile failures, Python stress |
@@ -332,7 +348,7 @@ running on the default port (or set `MULTICODER_URL`).
   it before letting anyone outside your network connect.
 * **One run at a time per tab**, two globally (`MAX_CONCURRENT_RUNS` in `server.js`).
 * **It executes untrusted code** on your machine. The job object contains the process tree, but
-  this is a development tool, not a security boundary — do not expose it to a network you do not
+  this is a development tool, not a security boundary â€” do not expose it to a network you do not
   control. It binds `127.0.0.1` by default for that reason.
 * **Compile timeouts** are fixed at 60 s; template-heavy C++ still compiles well under that.
 * Artifacts live in `.build/<runId>/` and are deleted after each request
@@ -341,5 +357,5 @@ running on the default port (or set `MULTICODER_URL`).
 ## Adding a language
 
 Add an entry to `src/executor.js` (a `plan()` returning the compile command and a run command)
-and the matching extension in `EXT`. Everything else — diagnostics, limits, tests, UI — is
+and the matching extension in `EXT`. Everything else â€” diagnostics, limits, tests, UI â€” is
 language-agnostic.

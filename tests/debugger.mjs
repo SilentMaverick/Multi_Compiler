@@ -1,4 +1,4 @@
-﻿import { createRequire } from 'node:module';
+import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const dbg = require('../src/debugger.js');
 
@@ -88,6 +88,28 @@ int main() {
   check('exit code reported', s2b.exitCode === 0, s2b.exitCode);
   check('program output captured', /42/.test(s2b.output || ''), JSON.stringify(s2b.output));
   dbg.stop(s2.sessionId);
+
+  // ---------------------------------------------------------------- visualizer
+  const VIS = `#include <vector>
+int main() {
+    int a[4] = {9, 8, 7, 6};
+    std::vector<int> v = {1, 2};
+    for (int i = 0; i < 3; i++) { a[i] = a[i] + i; }
+    return a[0] + v[0];
+}
+`;
+  const vis = await dbg.start({
+    files: [{ name: 'main.cpp', content: VIS }],
+    breakpoints: [{ file: 'main.cpp', line: 5 }],
+    limits: { timeMs: 5000, memoryMB: 256 },
+  });
+  check('visualizer session starts', vis.ok === true, JSON.stringify(vis).slice(0, 160));
+  const arrays = (vis.state && vis.state.arrays) || [];
+  const arrA = arrays.find((x) => x.name === 'a');
+  const arrV = arrays.find((x) => x.name === 'v');
+  check('C array is extracted for drawing', arrA && arrA.kind === 'array' && arrA.values.join(',') === '9,8,7,6', JSON.stringify(arrA));
+  check('std::vector is extracted', arrV && arrV.values.join(',') === '1,2', JSON.stringify(arrV));
+  dbg.stop(vis.sessionId);
 
   // java is refused politely
   let javaErr = null;

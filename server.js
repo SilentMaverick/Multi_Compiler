@@ -164,10 +164,11 @@ async function serveStatic(req, res, pathname) {
 function streamCollab(req, res, roomId, url) {
   const clientId = url.searchParams.get('clientId') || '';
   const name = url.searchParams.get('name') || 'guest';
+  const key = url.searchParams.get('key') || '';
 
   let room;
   try {
-    room = collab.join(roomId, clientId, name);
+    room = collab.join(roomId, key, clientId, name);
   } catch (err) {
     res.writeHead(Number.isInteger(err.status) ? err.status : 500, { 'Content-Type': 'text/plain' });
     return res.end(err.message);
@@ -204,7 +205,7 @@ function streamCollab(req, res, roomId, url) {
   const cleanup = () => {
     clearInterval(heartbeat);
     room.subscribers.delete(send);
-    collab.leave(roomId, clientId);
+    collab.leave(roomId, key, clientId);
   };
   req.on('close', cleanup);
   res.on('close', cleanup);
@@ -308,10 +309,10 @@ async function handle(req, res) {
       }
       if (action === 'leave' && req.method === 'POST') {
         const body = await readBody(req);
-        collab.leave(roomId, body.clientId);
+        collab.leave(roomId, body.key, body.clientId);
         return sendJson(res, 200, { ok: true });
       }
-      if (action === 'snapshot') return sendJson(res, 200, collab.snapshot(roomId));
+      if (action === 'snapshot') return sendJson(res, 200, collab.snapshot(roomId, url.searchParams.get('key') || ''));
     } catch (err) {
       return sendJson(res, Number.isInteger(err.status) ? err.status : 500, { ok: false, error: err.message });
     }

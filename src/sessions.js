@@ -27,6 +27,7 @@ const MAX_SESSIONS = 3;
 const MAX_LIFETIME_MS = 180000;
 const MAX_BUFFER_BYTES = 200 * 1024;
 const CLEANUP_DELAY_MS = 60000;
+const PTY_HELPER = require('path').join(__dirname, '..', 'native', 'bin', 'ptyhost.exe');
 
 const sessions = new Map();
 
@@ -136,10 +137,28 @@ async function start(body) {
   const tc = await toolchains.detect();
   const env = withPath({ ...process.env, LANG: 'C', LC_ALL: 'C' }, tc.runtimePathDirs);
 
+  // A pseudo console gives the program a real terminal: echo, line editing and
+  // ANSI colour. Without it stdin is a plain pipe and prompts never appear.
+  const ptyAvailable = process.platform === 'win32' && fs.existsSync(PTY_HELPER);
+  const usePty = Boolean(body.pty) && ptyAvailable;
+
+  let command = launch.command;
+  let args = launch.args;
+  if (usePty) {
+    command = PTY_HELPER;
+    args = [
+      '--cwd', launch.dir,
+      '--cols', String(Number(body.cols) > 0 ? Math.min(400, Number(body.cols)) : 120),
+      '--rows', String(Number(body.rows) > 0 ? Math.min(200, Number(body.rows)) : 32),
+      '--timeout', String(MAX_LIFETIME_MS),
+      '--', launch.command, ...launch.args,
+    ];
+  }
+
   const id = nextId();
   let proc;
   try {
-    proc = spawn(launch.command, launch.args, {
+    proc = spawn(command, args, {
       cwd: launch.dir,
       env,
       windowsHide: true,
@@ -182,6 +201,7 @@ async function start(body) {
   return {
     ok: true,
     sessionId: id,
+    pty: usePty,
     compile: {
       ok: true,
       cached: prepared.compile.cached,

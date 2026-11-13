@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 /**
  * Compile + run orchestration for the supported languages.
@@ -331,9 +331,19 @@ function cacheRestore(key, plan, language) {
       const classesSrc = path.join(src, 'classes');
       if (!fs.existsSync(classesSrc)) return null;
       copyTree(classesSrc, plan.classesDir);
+      // Another process may be replacing this entry; a half-copied tree is useless.
+      const classes = fs.readdirSync(plan.classesDir).filter((f) => f.endsWith('.class'));
+      if (!classes.length) {
+        fs.rmSync(src, { recursive: true, force: true });
+        return null;
+      }
     } else {
       const exe = path.join(src, 'artifact');
       if (!fs.existsSync(exe)) return null;
+      if (fs.statSync(exe).size <= 0) {
+        fs.rmSync(src, { recursive: true, force: true });
+        return null;
+      }
       fs.copyFileSync(exe, plan.artifact);
     }
     const now = new Date();
@@ -354,10 +364,10 @@ function cacheRestore(key, plan, language) {
 
 function cacheStore(key, plan, language, meta) {
   const dest = path.join(CACHE_DIR, key);
-  const tmp = `${dest}.tmp`;
+  // Per-process temp dir: the server and a test run can build the same key.
+  const tmp = `${dest}.tmp-${process.pid}-${Date.now().toString(36)}`;
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    fs.rmSync(tmp, { recursive: true, force: true });
     fs.mkdirSync(tmp, { recursive: true });
     if (language === 'java') copyTree(plan.classesDir, path.join(tmp, 'classes'));
     else fs.copyFileSync(plan.artifact, path.join(tmp, 'artifact'));

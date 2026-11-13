@@ -1,6 +1,6 @@
-{
+﻿{
   "name": "multi-coder",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Multi-language compile & run IDE for C++, C, Java, Python and JavaScript in the browser",
   "type": "commonjs",
@@ -13,7 +13,7 @@
     "dev": "node server.js --open",
     "setup": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap-toolchains.ps1",
     "build:native": "powershell -ExecutionPolicy Bypass -File scripts/build-jobrunner.ps1",
-    "test": "node tests/outline.js && node tests/problems.mjs && node tests/languages.mjs && node tests/stress.mjs && node tests/smoke.js && node tests/debugger.mjs && node tests/collab.mjs",
+    "test": "node tests/outline.js && node tests/problems.mjs && node tests/languages.mjs && node tests/stress.mjs && node tests/smoke.js && node tests/debugger.mjs && node tests/pty.mjs && node tests/collab.mjs",
     "test:all": "npm test"
   }
 }

@@ -196,6 +196,7 @@
                 <div class="dbg-frames" id="dbg-frames"></div>
               </div>
               <div class="dbg-main">
+                <div class="dbg-viz hidden" id="dbg-viz"></div>
                 <div class="dbg-title">Program output</div>
                 <pre class="dbg-out" id="dbg-out"></pre>
                 <form class="dbg-eval" id="dbg-eval-form">
@@ -212,6 +213,9 @@
               <button class="btn ghost sm" id="btn-term-stop" disabled>Stop</button>
               <span class="hint" id="term-status">Not running &mdash; start a session to type into the program.</span>
               <div class="spacer"></div>
+              <label class="term-echo" title="Run inside a real pseudo console (echo, colour, curses)">
+                <input type="checkbox" id="term-pty" checked /> PTY
+              </label>
               <label class="term-echo" title="Show what you type">
                 <input type="checkbox" id="term-echo" checked /> echo
               </label>

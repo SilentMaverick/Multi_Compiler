@@ -82,8 +82,9 @@ function sanitizeOp(raw) {
 }
 
 class Room {
-  constructor({ id, fileName, language, doc }) {
+  constructor({ id, secret, fileName, language, doc }) {
     this.id = id;
+    this.secret = secret;
     this.fileName = fileName;
     this.language = language;
     this.doc = doc;
@@ -142,9 +143,24 @@ function createRoom(body) {
   const language = typeof body.language === 'string' ? body.language : 'auto';
   const content = typeof body.content === 'string' ? body.content.slice(0, 512 * 1024) : '';
   const id = crypto.randomBytes(5).toString('base64url');
-  const room = new Room({ id, fileName, language, doc: content });
+  // The share link carries this key; without it the room is invisible and read-only
+  // at best. It lives in the URL fragment so it never reaches a server log.
+  const secret = crypto.randomBytes(18).toString('base64url');
+  const room = new Room({ id, secret, fileName, language, doc: content });
   ROOMS.set(id, room);
-  return { id, fileName, language, rev: room.rev };
+  return { id, secret, fileName, language, rev: room.rev };
+}
+
+/** Reject access unless the caller presents the room key. */
+function authorize(id, key) {
+  const room = ROOMS.get(id);
+  if (!room) throw new HttpError(404, 'That shared session does not exist (or expired).');
+  const presented = typeof key === 'string' ? key : '';
+  if (presented.length !== room.secret.length || !crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(room.secret))) {
+    throw new HttpError(401, 'This session needs its access key. Use the full share link.');
+  }
+  touch(room);
+  return room;
 }
 
 function getRoom(id) {
@@ -154,8 +170,8 @@ function getRoom(id) {
   return room;
 }
 
-function join(roomId, clientId, name) {
-  const room = getRoom(roomId);
+function join(roomId, key, clientId, name) {
+  const room = authorize(roomId, key);
   const id = String(clientId || crypto.randomBytes(4).toString('hex')).slice(0, 64);
   if (!room.clients.has(id)) {
     const color = GUEST_COLORS[room.clients.size % GUEST_COLORS.length];
@@ -170,21 +186,25 @@ function join(roomId, clientId, name) {
   return room;
 }
 
-function leave(roomId, clientId) {
-  const room = ROOMS.get(roomId);
-  if (!room) return;
+function leave(roomId, key, clientId) {
+  let room;
+  try {
+    room = authorize(roomId, key);
+  } catch {
+    return;
+  }
   if (room.clients.delete(String(clientId))) room.broadcastPresence();
 }
 
 function submit(roomId, body) {
-  const room = getRoom(roomId);
+  const room = authorize(roomId, body.key);
   const op = sanitizeOp(body.op);
   const baseRev = Number.isFinite(Number(body.rev)) ? Number(body.rev) : room.rev;
   return room.apply(String(body.clientId || 'anon').slice(0, 64), baseRev, op);
 }
 
-function snapshot(roomId) {
-  const room = getRoom(roomId);
+function snapshot(roomId, key) {
+  const room = authorize(roomId, key);
   return {
     id: room.id,
     fileName: room.fileName,
@@ -219,6 +239,7 @@ sweeper.unref?.();
 module.exports = {
   createRoom,
   getRoom,
+  authorize,
   join,
   leave,
   submit,

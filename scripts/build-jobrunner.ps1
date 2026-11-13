@@ -34,3 +34,13 @@ if (-not (Test-Path $Out)) { throw "compiler produced no output at $Out" }
 
 $size = [math]::Round((Get-Item $Out).Length / 1KB, 1)
 Write-Host "jobrunner built: $Out ($size KB)"
+
+# The pseudo-console host is what gives the Terminal tab real echo and colour.
+$PtySrc = Join-Path $Root 'native\ptyhost.cs'
+$PtyOut = Join-Path $OutDir 'ptyhost.exe'
+if (Test-Path $PtySrc) {
+  & $csc /nologo /target:exe /platform:anycpu /optimize+ /warn:0 "/out:$PtyOut" $PtySrc
+  if ($LASTEXITCODE -ne 0) { throw "csc failed building ptyhost (exit $LASTEXITCODE)" }
+  $ptysize = [math]::Round((Get-Item $PtyOut).Length / 1KB, 1)
+  Write-Host "ptyhost built:   $PtyOut ($ptysize KB)"
+}

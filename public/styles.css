@@ -1084,3 +1084,47 @@ html[data-theme="light"] .outline-item.has-issue .o-name { color: #b91c1c; }
 html[data-theme="light"] .diff-exp { color: #b91c1c; }
 html[data-theme="light"] .diff-act { color: #0b7a45; }
 html[data-theme="light"] .collab-bar { background: rgba(37, 99, 235, 0.08); }
+
+/* ---------------------------------------------------------------- visualizer */
+.dbg-viz {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+  max-height: 40%;
+  overflow: auto;
+  flex: 0 0 auto;
+}
+.viz-row { display: flex; align-items: flex-start; gap: 8px; }
+.viz-label {
+  width: 70px;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #9dc0ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-top: 3px;
+}
+.viz-cells { display: flex; flex-wrap: wrap; gap: 3px; }
+.viz-mrow { display: flex; gap: 3px; }
+.viz-cell {
+  min-width: 26px;
+  padding: 3px 6px;
+  text-align: center;
+  background: var(--bg-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  transition: background 0.3s, border-color 0.3s;
+}
+.viz-cell.changed {
+  background: rgba(240, 180, 41, 0.25);
+  border-color: rgba(240, 180, 41, 0.65);
+}
+html[data-theme="light"] .viz-label { color: #1d4ed8; }
+html[data-theme="light"] .viz-cell { background: #f3f5f9; }
+html[data-theme="light"] .viz-cell.changed { background: rgba(180, 83, 9, 0.18); border-color: rgba(180, 83, 9, 0.5); }

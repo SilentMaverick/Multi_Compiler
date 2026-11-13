@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /* Multi-Coder front-end.
  * No framework, no build step. All user-supplied text goes into the DOM via
@@ -73,6 +73,7 @@
     termSend: $('btn-term-send'),
     termClear: $('btn-term-clear'),
     termEcho: $('term-echo'),
+    termPty: $('term-pty'),
     dbgStart: $('btn-dbg-start'),
     dbgNext: $('btn-dbg-next'),
     dbgStep: $('btn-dbg-step'),
@@ -83,6 +84,7 @@
     dbgVars: $('dbg-vars'),
     dbgFrames: $('dbg-frames'),
     dbgOut: $('dbg-out'),
+    dbgViz: $('dbg-viz'),
     dbgEvalForm: $('dbg-eval-form'),
     dbgExpr: $('dbg-expr'),
     stressIters: $('stress-iters'),
@@ -168,10 +170,10 @@ public class Main {
   let problemsCache = [];
   let markHandles = [];
   let lastResult = null;
-  const session = { id: null, source: null, running: false };
+  const session = { id: null, source: null, running: false, pty: false };
   const debug = { id: null, active: false, paused: false, bps: [] };
   let debugLineMark = null;
-  const collab = { roomId: null, clientId: null, rev: 0, source: null, applying: false, people: [], queue: [], pumping: false, resyncing: false, lastDoc: '' };
+  const collab = { roomId: null, key: null, clientId: null, rev: 0, source: null, applying: false, people: [], queue: [], pumping: false, resyncing: false, lastDoc: '' };
 
   // ------------------------------------------------------------ state
 
@@ -1389,6 +1391,71 @@ public class Main {
     }
   }
 
+  const vizPrev = {};
+
+  /** Draw arrays / matrices / strings from the debugged frame, flagging changes. */
+  function renderViz(arrays) {
+    if (!els.dbgViz) return;
+    els.dbgViz.textContent = '';
+
+    if (!arrays || !arrays.length) {
+      els.dbgViz.classList.add('hidden');
+      return;
+    }
+    els.dbgViz.classList.remove('hidden');
+
+    arrays.forEach((a) => {
+      const row = document.createElement('div');
+      row.className = 'viz-row';
+
+      const label = document.createElement('span');
+      label.className = 'viz-label';
+      label.textContent = a.name;
+      label.title = `${a.name} \u00b7 ${a.length}${a.kind === 'matrix' ? ` x ${a.width}` : ''}`;
+
+      const cells = document.createElement('div');
+      cells.className = 'viz-cells';
+      if (a.kind === 'matrix') cells.style.flexDirection = 'column';
+
+      const prev = vizPrev[a.name];
+      const flat = a.kind === 'matrix' ? a.values.flat() : a.values;
+      let idx = 0;
+
+      const makeCell = (value, r, c) => {
+        const cell = document.createElement('div');
+        cell.className = 'viz-cell';
+        if (prev && String(prev[idx]) !== String(value)) cell.classList.add('changed');
+        cell.textContent = value;
+        cell.title = a.kind === 'matrix' ? `${a.name}[${r}][${c}] = ${value}` : `${a.name}[${idx}] = ${value}`;
+        idx += 1;
+        return cell;
+      };
+
+      if (a.kind === 'matrix') {
+        a.values.forEach((r, ri) => {
+          const mrow = document.createElement('div');
+          mrow.className = 'viz-mrow';
+          r.forEach((v, ci) => mrow.appendChild(makeCell(v, ri, ci)));
+          cells.appendChild(mrow);
+        });
+      } else {
+        a.values.forEach((v, i) => cells.appendChild(makeCell(v, 0, i)));
+      }
+
+      vizPrev[a.name] = flat.slice();
+      row.append(label, cells);
+      els.dbgViz.appendChild(row);
+    });
+  }
+
+  function clearViz() {
+    Object.keys(vizPrev).forEach((k) => delete vizPrev[k]);
+    if (els.dbgViz) {
+      els.dbgViz.textContent = '';
+      els.dbgViz.classList.add('hidden');
+    }
+  }
+
   function markDebugLine(line) {
     if (!editor || editor.kind !== 'cm') return;
     if (debugLineMark != null) {
@@ -1408,6 +1475,7 @@ public class Main {
 
   async function startDebug() {
     if (debug.active) await stopDebug(true);
+    clearViz();
     els.dbgOut.textContent = '';
     els.dbgStatus.textContent = 'Compiling with debug symbols\u2026';
     els.dbgStart.disabled = true;
@@ -1436,6 +1504,7 @@ public class Main {
       }
       debug.id = data.sessionId;
       debug.active = true;
+      clearViz();
       showTab('debug');
       renderDebug(data.state);
     } catch (err) {
@@ -1527,6 +1596,8 @@ public class Main {
       els.dbgStatus.textContent = st.status;
     }
 
+    renderViz(st.arrays);
+
     // variables
     els.dbgVars.textContent = '';
     if (!st.variables || !st.variables.length) {
@@ -1605,7 +1676,7 @@ public class Main {
   // ------------------------------------------------------------ live sharing / collaboration
 
   function collabLink() {
-    return `${location.origin}${location.pathname}#room=${collab.roomId}`;
+    return `${location.origin}${location.pathname}#room=${collab.roomId}&key=${collab.key}`;
   }
 
   async function copyText(text) {
@@ -1659,8 +1730,8 @@ public class Main {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not start sharing.');
-      joinRoom(data.room.id);
-      history.replaceState(null, '', `#room=${data.room.id}`);
+      joinRoom(data.room.id, data.room.secret);
+      history.replaceState(null, '', `#room=${data.room.id}&key=${data.room.secret}`);
       const ok = await copyText(collabLink());
       toast(ok ? 'Live session started \u2014 link copied.' : 'Live session started.');
     } catch (err) {
@@ -1668,14 +1739,19 @@ public class Main {
     }
   }
 
-  function joinRoom(roomId) {
+  function joinRoom(roomId, key) {
     collab.roomId = roomId;
+    collab.key = key || '';
     collab.clientId =
       window.crypto && crypto.randomUUID ? crypto.randomUUID() : `c${Math.random().toString(36).slice(2)}`;
     collab.rev = 0;
     collab.queue.length = 0;
     collab.lastDoc = editor ? editor.getValue() : '';
-    const url = `api/collab/${encodeURIComponent(roomId)}/stream?clientId=${encodeURIComponent(collab.clientId)}&name=${encodeURIComponent(collabName())}`;
+    const url =
+      `api/collab/${encodeURIComponent(roomId)}/stream` +
+      `?clientId=${encodeURIComponent(collab.clientId)}` +
+      `&name=${encodeURIComponent(collabName())}` +
+      `&key=${encodeURIComponent(collab.key)}`;
     const es = new EventSource(url);
     collab.source = es;
     es.onmessage = onCollabEvent;
@@ -1748,7 +1824,7 @@ public class Main {
     collab.resyncing = true;
     setTimeout(async () => {
       try {
-        const res = await fetch(`api/collab/${encodeURIComponent(collab.roomId)}/snapshot`);
+        const res = await fetch(`api/collab/${encodeURIComponent(collab.roomId)}/snapshot?key=${encodeURIComponent(collab.key)}`);
         const snap = await res.json();
         if (res.ok) {
           collab.queue.length = 0;
@@ -1785,7 +1861,7 @@ public class Main {
         const res = await fetch(`api/collab/${encodeURIComponent(collab.roomId)}/ops`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clientId: collab.clientId, rev: collab.rev, op }),
+          body: JSON.stringify({ clientId: collab.clientId, key: collab.key, rev: collab.rev, op }),
         });
         const data = await res.json();
         if (!res.ok || data.resync) {
@@ -1808,7 +1884,7 @@ public class Main {
       await fetch(`api/collab/${encodeURIComponent(id)}/leave`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: collab.clientId }),
+        body: JSON.stringify({ clientId: collab.clientId, key: collab.key }),
       });
     } catch {
       /* ignore */
@@ -1822,6 +1898,7 @@ public class Main {
       collab.source = null;
     }
     collab.roomId = null;
+    collab.key = null;
     collab.clientId = null;
     collab.rev = 0;
     collab.queue.length = 0;
@@ -2155,6 +2232,55 @@ console.log(Math.max(...values));
       .replace(/\r(?!\n)/g, '');
   }
 
+  // Colours a program emits when it runs in a real console.
+  const ANSI_COLORS = {
+    30: '#3b4252', 31: '#ff5c6c', 32: '#2ecc8f', 33: '#f0b429', 34: '#4f8cff',
+    35: '#c792ea', 36: '#56b6f5', 37: '#d8e0ef', 90: '#64748b', 91: '#ff9aa4',
+    92: '#9df3cd', 93: '#ffd98a', 94: '#9dc0ff', 95: '#e0b0ff', 96: '#a5e8ff', 97: '#ffffff',
+  };
+
+  /** Append program output, turning SGR colour codes into styled spans. */
+  function appendAnsi(raw) {
+    const text = String(raw).replace(/\r\n/g, '\n').replace(/\r/g, '');
+    const re = /\u001b\[([0-9;?]*)([A-Za-z])/g;
+    let last = 0;
+    let color = null;
+    let bold = false;
+    let match;
+
+    const emit = (str) => {
+      if (!str) return;
+      if (color === null && !bold) {
+        els.termOut.appendChild(document.createTextNode(str));
+        return;
+      }
+      const span = document.createElement('span');
+      span.textContent = str;
+      if (color) span.style.color = color;
+      if (bold) span.style.fontWeight = '700';
+      els.termOut.appendChild(span);
+    };
+
+    while ((match = re.exec(text)) !== null) {
+      emit(text.slice(last, match.index));
+      last = re.lastIndex;
+      if (match[2] !== 'm') continue; // cursor/erase sequences are dropped
+      const codes = match[1].split(';').filter((c) => c !== '').map(Number);
+      if (!codes.length) codes.push(0);
+      for (const c of codes) {
+        if (c === 0) {
+          color = null;
+          bold = false;
+        } else if (c === 1) bold = true;
+        else if (c === 22) bold = false;
+        else if (c === 39) color = null;
+        else if (ANSI_COLORS[c]) color = ANSI_COLORS[c];
+      }
+    }
+    emit(text.slice(last));
+    els.termOut.scrollTop = els.termOut.scrollHeight;
+  }
+
   function setTermControls(running) {
     if (!els.termStart) return;
     els.termStart.disabled = running;
@@ -2177,7 +2303,7 @@ console.log(Math.max(...values));
       const res = await fetch('api/session/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildPayload()),
+        body: JSON.stringify({ ...buildPayload(), pty: els.termPty ? els.termPty.checked : false }),
       });
       data = await res.json();
     } catch (err) {
@@ -2206,6 +2332,7 @@ console.log(Math.max(...values));
     }
 
     session.id = data.sessionId;
+    session.pty = Boolean(data.pty);
     session.running = true;
     termClear();
     termWrite(`session ${data.sessionId} \u00b7 ${data.language}${data.compile.cached ? ' \u00b7 cached build' : ''}\n`, 'term-sys');
@@ -2230,8 +2357,8 @@ console.log(Math.max(...values));
       } catch {
         return;
       }
-      if (msg.t === 'o') termWrite(stripAnsi(msg.d));
-      else if (msg.t === 'e') termWrite(stripAnsi(msg.d), 'term-err');
+      if (msg.t === 'o') appendAnsi(msg.d);
+      else if (msg.t === 'e') appendAnsi(msg.d);
       else if (msg.t === 'x') endSession(msg.code);
     };
     es.onerror = () => {
@@ -2287,7 +2414,8 @@ console.log(Math.max(...values));
       await fetch(`api/session/${encodeURIComponent(session.id)}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: `${line}\n` }),
+        // Enter in a console is CR; a plain pipe wants LF.
+        body: JSON.stringify({ data: session.pty ? `${line}\r` : `${line}\n` }),
       });
     } catch (err) {
       termWrite(`[error] ${err.message}\n`, 'term-err');
@@ -2629,8 +2757,8 @@ console.log(Math.max(...values));
     setTimeout(() => editor.focus(), 60);
 
     // arriving through a share link joins the room automatically
-    const roomMatch = /^#room=([A-Za-z0-9_-]{4,64})$/.exec(location.hash);
-    if (roomMatch) setTimeout(() => joinRoom(roomMatch[1]), 350);
+    const roomMatch = /^#room=([A-Za-z0-9_-]{4,64})(?:&key=([A-Za-z0-9_-]+))?$/.exec(location.hash);
+    if (roomMatch) setTimeout(() => joinRoom(roomMatch[1], roomMatch[2] || ''), 350);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

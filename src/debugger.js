@@ -323,6 +323,69 @@ class GdbSession {
 
 // ---------------------------------------------------------------- state
 
+/**
+ * Turn gdb's printed form into cells the UI can draw.
+ *   {3, 1, 4}                                        -> array
+ *   std::vector of length 4, capacity 4 = {10, 20}   -> array
+ *   {{1, 2}, {3, 4}}                                 -> matrix
+ *   "hello"                                          -> string
+ */
+function parsePrintable(name, printed) {
+  if (printed == null) return null;
+  const text = String(printed).replace(/^=\s*/, '').trim();
+  if (!text) return null;
+
+  if (/^".*"$/.test(text)) {
+    const inner = text.slice(1, -1).replace(/\\"/g, '"');
+    const chars = Array.from(inner).slice(0, 48);
+    return { name, kind: 'string', length: Array.from(inner).length, values: chars };
+  }
+
+  // Every innermost brace group is one row; a single group means a 1-D array.
+  // This copes with both raw arrays and pretty-printed nested std::vectors,
+  // where rows read "std::vector of length 2, capacity 2 = {1, 2}".
+  const groups = [];
+  const re = /\{([^{}]*)\}/g;
+  let m;
+  while ((m = re.exec(text)) !== null) groups.push(m[1].trim());
+  if (!groups.length) return null;
+
+  const splitCells = (row) =>
+    row
+      .split(',')
+      .map((v) => v.trim().replace(/^"|"$/g, ''))
+      .filter((v) => v !== '');
+
+  if (groups.length === 1) {
+    const values = splitCells(groups[0]).slice(0, 48);
+    const lenMatch = /length (\d+)/.exec(text);
+    return { name, kind: 'array', length: lenMatch ? Number(lenMatch[1]) : values.length, values };
+  }
+
+  const rows = groups.map((g) => splitCells(g).slice(0, 48));
+  const width = Math.max(...rows.map((r) => r.length));
+  return { name, kind: 'matrix', length: rows.length, width, values: rows };
+}
+
+async function collectArrays(session, variables) {
+  const candidates = (variables || [])
+    .filter((v) => /\[|vector|string|array/i.test(v.type || '') && /^[A-Za-z_]\w*$/.test(v.name))
+    .slice(0, 4);
+
+  const arrays = [];
+  for (const v of candidates) {
+    try {
+      const res = await session.send(`-data-evaluate-expression ${JSON.stringify(v.name)}`);
+      if (res.cls !== 'done') continue;
+      const parsed = parsePrintable(v.name, String(res.results.value || ''));
+      if (parsed) arrays.push(parsed);
+    } catch {
+      /* a variable may vanish between stops */
+    }
+  }
+  return arrays;
+}
+
 function frameFrom(f) {
   return {
     level: Number(f.level || 0),
@@ -369,6 +432,13 @@ async function collectState(session, note) {
     }));
   } catch {
     /* no frame */
+  }
+
+  // Data worth drawing: arrays, vectors and strings in this frame.
+  try {
+    state.arrays = session.status === 'exited' ? [] : await collectArrays(session, state.variables);
+  } catch {
+    state.arrays = [];
   }
 
   session.lastState = state;
@@ -591,4 +661,4 @@ function shutdown() {
   sessions.clear();
 }
 
-module.exports = { start, command, stop, list, shutdown, parseMiResults, MAX_SESSIONS };
+module.exports = { start, command, stop, list, shutdown, parseMiResults, parsePrintable, MAX_SESSIONS };
