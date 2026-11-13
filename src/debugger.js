@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /**
  * Step debugger (#2) for C and C++, driven through gdb's machine interface.
@@ -20,6 +20,7 @@ const { spawn } = require('child_process');
 const executor = require('./executor');
 const toolchains = require('./toolchains');
 const { withPath } = require('./runner');
+const javaDbg = require('./javaDebugger');
 
 const MAX_SESSIONS = 2;
 const CMD_TIMEOUT_MS = 20000;
@@ -174,6 +175,7 @@ function isNoise(line) {
 
 class GdbSession {
   constructor(id, proc, dir) {
+    this.kind = 'gdb';
     this.id = id;
     this.proc = proc;
     this.dir = dir;
@@ -470,11 +472,12 @@ async function start(body) {
   // not the string - so this has to be a conditional expression.
   const language = typeof body.language === 'string' && body.language !== 'auto' ? body.language : null;
   const requested = language || executor.detectLanguage(body.files || [], 'auto');
-  if (requested === 'java') {
-    throw new executor.HttpError(400, 'Debugging currently supports C and C++ only. Java runs use the Run button.');
-  }
+
+  // Java goes through jdb instead of gdb; the state shape is the same.
+  if (requested === 'java') return startJava(body);
+
   if (requested === 'python' || requested === 'javascript') {
-    throw new executor.HttpError(400, 'Debugging currently supports C and C++ only.');
+    throw new executor.HttpError(400, 'Debugging supports C, C++ and Java only.');
   }
 
   const prepared = await executor.execute(
@@ -574,10 +577,86 @@ async function start(body) {
   };
 }
 
+/** Compile Java with -g, then hand the class path to jdb. */
+async function startJava(body) {
+  const prepared = await executor.execute(
+    { ...body, language: 'java' },
+    { compileOnly: true, keepArtifacts: true, debugBuild: true }
+  );
+  const dir = prepared.meta && prepared.meta.launch && prepared.meta.launch.dir;
+  const drop = () => {
+    if (!dir) return;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  };
+
+  if (!prepared.compile || !prepared.compile.ok) {
+    drop();
+    return { ok: false, compile: prepared.compile || null, error: 'Compilation failed.' };
+  }
+  if (!prepared.meta.mainClass) {
+    drop();
+    return { ok: false, compile: prepared.compile, error: 'No class with `public static void main` was found.' };
+  }
+
+  const tc = await toolchains.detect();
+  const jdbBin = path.join(path.dirname(tc.java.javac || ''), process.platform === 'win32' ? 'jdb.exe' : 'jdb');
+  if (!fs.existsSync(jdbBin)) {
+    drop();
+    return { ok: false, error: 'jdb was not found next to javac.' };
+  }
+
+  const breakpoints = (Array.isArray(body.breakpoints) ? body.breakpoints : []).slice(0, 50);
+  let started;
+  try {
+    started = await javaDbg.start({
+      jdbBin,
+      classesDir: prepared.meta.artifact,
+      mainClass: prepared.meta.mainClass,
+      breakpoints,
+      sourceFile: (body.files && body.files[0] && body.files[0].name) || `${prepared.meta.mainClass}.java`,
+    });
+  } catch (err) {
+    drop();
+    throw new executor.HttpError(500, err.message);
+  }
+
+  counter += 1;
+  const id = `j${Date.now().toString(36)}${counter.toString(36)}`;
+  started.session.id = id;
+  sessions.set(id, started.session);
+
+  return {
+    ok: true,
+    sessionId: id,
+    language: 'java',
+    compile: {
+      ok: true,
+      ms: prepared.compile.ms,
+      warnings: prepared.compile.warnings,
+      diagnostics: prepared.compile.diagnostics,
+    },
+    state: { ...started.state, id },
+  };
+}
+
 /** Run one debugger action and return the resulting state. */
 async function command(id, action, options = {}) {
   const session = sessions.get(id);
   if (!session) throw new executor.HttpError(404, 'That debug session has ended.');
+
+  // jdb has its own command set and transcript parsing.
+  if (session.kind === 'jdb') {
+    try {
+      return await javaDbg.command(session, action, options);
+    } catch (err) {
+      throw new executor.HttpError(500, err.message);
+    }
+  }
+
   if (session.status === 'exited' && action !== 'evaluate') {
     return collectState(session, 'program has exited');
   }
@@ -642,6 +721,11 @@ async function command(id, action, options = {}) {
 function stop(id) {
   const session = sessions.get(id);
   if (!session) return false;
+  if (session.kind === 'jdb') {
+    javaDbg.dispose(session);
+    sessions.delete(id);
+    return true;
+  }
   session.dispose();
   return true;
 }
@@ -653,7 +737,8 @@ function list() {
 function shutdown() {
   for (const s of [...sessions.values()]) {
     try {
-      s.dispose();
+      if (s.kind === 'jdb') javaDbg.dispose(s);
+      else s.dispose();
     } catch {
       /* ignore */
     }

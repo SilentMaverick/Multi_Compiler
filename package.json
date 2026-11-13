@@ -1,6 +1,6 @@
 ﻿{
   "name": "multi-coder",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "private": true,
   "description": "Multi-language compile & run IDE for C++, C, Java, Python and JavaScript in the browser",
   "type": "commonjs",

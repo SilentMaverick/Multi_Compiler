@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 /**
  * Compile + run orchestration for the supported languages.
@@ -195,7 +195,7 @@ function cppPlan({ language, files, dir, tc, debug }) {
   return { command: compiler, args, artifact: exe, sourceNames: sources };
 }
 
-function javaPlan({ files, dir, tc }) {
+function javaPlan({ files, dir, tc, debug }) {
   if (!tc.java.javac) throw new HttpError(503, 'javac not found. Run: npm run setup');
   const sources = files.map((f) => f.name).filter((n) => path.extname(n).toLowerCase() === '.java');
   if (!sources.length) throw new HttpError(400, 'No .java source files to compile.');
@@ -203,6 +203,7 @@ function javaPlan({ files, dir, tc }) {
   fs.mkdirSync(classesDir, { recursive: true });
   const mainClass = javaMainClass(files);
   const args = [
+    ...(debug ? ['-g'] : []),
     '-encoding', 'UTF-8',
     '-d', classesDir,
     '-J-Duser.language=en',
@@ -243,7 +244,7 @@ function jsPlan({ files, dir, tc }) {
 
 /** Pick the compile plan for a detected language. */
 function planFor({ language, files, dir, tc, debug }) {
-  if (language === 'java') return javaPlan({ files, dir, tc });
+  if (language === 'java') return javaPlan({ files, dir, tc, debug });
   if (language === 'python') return pythonPlan({ files, dir, tc });
   if (language === 'javascript') return jsPlan({ files, dir, tc });
   return cppPlan({ language, files, dir, tc, debug });

@@ -111,12 +111,45 @@ int main() {
   check('std::vector is extracted', arrV && arrV.values.join(',') === '1,2', JSON.stringify(arrV));
   dbg.stop(vis.sessionId);
 
-  // java is refused politely
-  let javaErr = null;
-  try {
-    await dbg.start({ files: [{ name: 'Main.java', content: 'public class Main { public static void main(String[] a){} }' }] });
-  } catch (e) { javaErr = e; }
-  check('java debugging refused with a clear message', javaErr && /C and C\+\+ only/.test(javaErr.message), javaErr && javaErr.message);
+  // ---------------------------------------------------------------- java (jdb)
+  const JAVA = `public class Main {
+    static int add(int x, int y) { return x + y; }
+    public static void main(String[] args) {
+        int[] arr = {5, 3, 1};
+        String label = "hi";
+        int total = 0;
+        for (int i = 0; i < arr.length; i++) {
+            total = add(total, arr[i]);
+        }
+        System.out.println(label + " " + total);
+    }
+}
+`;
+  const jd = await dbg.start({
+    files: [{ name: 'Main.java', content: JAVA }],
+    breakpoints: [{ file: 'Main.java', line: 8 }],
+    limits: { timeMs: 8000, memoryMB: 256 },
+  });
+  check('java debug session starts', jd.ok === true, JSON.stringify(jd).slice(0, 200));
+  if (jd.ok) {
+    check('java stops at the breakpoint', jd.state.status === 'paused' && jd.state.location.line === 8, JSON.stringify(jd.state.location));
+    const jnames = (jd.state.variables || []).map((v) => v.name);
+    check('java locals are listed', jnames.includes('arr') && jnames.includes('total'), jnames.join(','));
+    const jarr = (jd.state.arrays || []).find((a) => a.name === 'arr');
+    check('java array is drawn', jarr && jarr.values.join(',') === '5,3,1', JSON.stringify(jarr));
+
+    const jStep = await dbg.command(jd.sessionId, 'next');
+    check('java stepping works', jStep.status === 'paused' && jStep.location.line !== 8, JSON.stringify(jStep.location));
+
+    const jEval = await dbg.command(jd.sessionId, 'evaluate', { expr: 'label' });
+    check('java evaluate works', jEval.evaluation && /hi/.test(String(jEval.evaluation.value)), JSON.stringify(jEval.evaluation));
+
+    // the loop breakpoint would re-trigger, so clear it before running out
+    await dbg.command(jd.sessionId, 'breakpoint-remove', { file: 'Main.java', line: 8 });
+    const jEnd = await dbg.command(jd.sessionId, 'continue');
+    check('java program runs to completion', jEnd.status === 'exited', jEnd.status);
+    dbg.stop(jd.sessionId);
+  }
 
   console.log(`\n  ${pass}/${pass + fail} checks passed`);
   process.exit(fail ? 1 : 0);
